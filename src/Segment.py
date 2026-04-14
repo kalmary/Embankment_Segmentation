@@ -55,11 +55,9 @@ def load_data(las_path):
  
     labels    = np.array(las.classification, dtype=np.int32)
  
-    ground_embankment_mask = (labels == 1) | (labels == 2) #| (labels == 1)
+    ground_embankment_mask = (labels == 2) #| (labels == 2) #| (labels == 1)
     xyz = xyz[ground_embankment_mask]
     labels = labels[ground_embankment_mask]
-    
-    plot_cloud(xyz, labels)
 
     del las
     return xyz, labels
@@ -336,7 +334,7 @@ def SegmentEmbankment(
     voxel_size:     float = 0.10,
     rail_radius:    float = 0.50,
     grid_cell_size: float = 0.50,
-    max_dist_m:     float = 10.0,
+    max_dist_m:     float = 15.0,
     crown_width_m:  float = 3.0,
     min_slope:      float = 0.05,
     max_slope:      float = 5.5,
@@ -443,7 +441,7 @@ def main():
  
         xyz_raw, _ = load_data(laz_path)
  
-        xyz, vis_labels = segment_embankment(xyz_raw, db_params)
+        xyz, vis_labels = SegmentEmbankment(xyz_raw, db_params)
  
         xyz_vis = xyz.copy()
         xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
