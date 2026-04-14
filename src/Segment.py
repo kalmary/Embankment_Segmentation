@@ -55,7 +55,7 @@ def load_data(las_path):
  
     labels    = np.array(las.classification, dtype=np.int32)
  
-    ground_embankment_mask = (labels == 2) | (labels == 2) #| (labels == 1)
+    ground_embankment_mask = (labels == 1) | (labels == 2) #| (labels == 1)
     xyz = xyz[ground_embankment_mask]
     labels = labels[ground_embankment_mask]
     
@@ -330,7 +330,9 @@ def refine_mask_2d(xyz, mask, grid_cell_size=0.5, closing_radius=2, min_cluster_
 # --------------------------------------------------
 def SegmentEmbankment(
     xyz: np.ndarray,          
-    db_param_path: str,       
+    db_param_path: str,
+    ground_label:   int,
+    rails_label:    int,      
     voxel_size:     float = 0.10,
     rail_radius:    float = 0.50,
     grid_cell_size: float = 0.50,
@@ -380,6 +382,7 @@ def SegmentEmbankment(
  
         if chunk_track_labels.sum() == 0:
             continue
+
         # Embankment growing for each chunk
         chunk_embankment_labels = grow_embankment_connected(
             chunk_xyz, chunk_track_labels,
