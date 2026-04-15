@@ -167,39 +167,79 @@ class SegmentEmbankment:
 
     
     def _base_segm(self, data: PCD) -> PCD:
+        track_labels = data.labels  # already set by _label_rail_points in segment()
 
-        # here update data.labels
+        embankment_labels = self._grow_embankment_mask(data.points, track_labels)
 
+        mask2fix = embankment_labels == 1
+        mask2d = self._refine_mask_2d(data.points, mask2fix)
+
+        embankment_labels = np.zeros_like(embankment_labels)
+        embankment_labels[mask2d] = 1
+
+        # 0 = ground, 1 = rail, 2 = embankment
+        vis_labels = np.zeros(len(data.points), dtype=np.uint8)
+        vis_labels[track_labels == 1] = 1
+        vis_labels[embankment_labels == 1] = 2
+
+        data.labels = vis_labels
         return data
     
     def _big_segm(self, data: PCD) -> PCD:
-        
-        for mask in self._iter_tiles(data.points,
-                                     self.cfg["tile_size"],
-                                     self.cfg["overlap"],
-                                     self.cfg["min_points"]):
+        data.processed = np.zeros(data.points.shape[0], dtype=bool)
 
+        for mask in self._iter_tiles(data.points, **self._get_cfg("tile_size", "overlap", "min_points")):
             data_chunk = data.copy()
             data_chunk.subsample(mask)
-
             data_chunk = self._base_segm(data_chunk)
-
             data.update_mask(mask)
             data.labels[mask] = data_chunk.labels
 
-            del data_chunk
+        return data
+    
+    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0, chunk_size: int = 500_000) -> PCD:
+        """
+        Propagates labels from processed points to unprocessed ones via
+        Gaussian-weighted KNN voting. Tree built on small processed set,
+        large unprocessed set queried in chunks.
+        """
+        processed_mask   = data.processed
+        unprocessed_mask = ~processed_mask
 
+        if unprocessed_mask.sum() == 0:
+            return data
+
+        src_pts    = data.points[processed_mask]
+        src_labels = data.labels[processed_mask]
+
+        src_probs = np.zeros((src_labels.shape[0], 2), dtype=np.float32)
+        src_probs[src_labels == 0, 0] = 1.0
+        src_probs[src_labels == 1, 1] = 1.0
+
+        tree = cKDTree(src_pts)
+
+        query_pts  = data.points[unprocessed_mask]
+        out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
+
+        pbar = range(0, query_pts.shape[0], chunk_size)
+        if self.verbose:
+            pbar = tqdm(pbar, total=query_pts.shape[0], desc="Upsampling", unit="chunk", leave=False)
+
+        for start in pbar:
+            end   = min(start + chunk_size, query_pts.shape[0])
+            chunk = query_pts[start:end]
+
+            dists, idxs  = tree.query(chunk, k=k)
+            weights       = np.exp(-0.5 * (dists / sigma) ** 2)
+            weights      /= weights.sum(axis=1, keepdims=True)
+
+            neighbor_probs        = src_probs[idxs]                              # (C, k, 2)
+            agg                   = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, 2)
+            out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
+
+        data.labels[unprocessed_mask] = out_labels
         return data
 
-    def _upsample_labels(data: PCD) -> PCD:
-        """
-        casts coarse labels after segmentation to fine resolution (original pcd)
-        """
-
-        return data
-            
-
-        
 
     
     def segment(self, data: PCD) -> np.ndarray:
@@ -231,10 +271,11 @@ class SegmentEmbankment:
 
         if data.points.shape[0] < 5*10e6:
             data = self._base_segm(data)
+            data_org.labels[surviving] = data.labels
         else:
             data = self._big_segm(data)
-        
-        data_org.labels[surviving] = data.labels
+            tiled_surviving = surviving[data.processed]
+            data_org.labels[tiled_surviving] = data.labels[data.processed]
         data_org = self._upsample_labels(data_org)
 
         return data_org.labels
