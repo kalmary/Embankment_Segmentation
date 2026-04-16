@@ -423,13 +423,13 @@ class SegmentEmbankment:
         n = data.points.shape[0]
         surviving = np.arange(n)
 
-        mask = voxel_subsample_vectorized(data.points, voxel_size=0.1)
+        mask = voxel_subsample_vectorized(data.points, voxel_size=0.05)
         surviving = surviving[mask]
         data.subsample(mask)
 
-        mask = remove_outliers(data.points, nb_neighbors=40, std_ratio=2.0)
-        surviving = surviving[mask]
-        data.subsample(mask)
+        # mask = remove_outliers(data.points, nb_neighbors=40, std_ratio=2.0)
+        # surviving = surviving[mask]
+        # data.subsample(mask)
 
         # now surviving[i] = index in data_org of data.points[i]
         data_org.update_mask(surviving)
