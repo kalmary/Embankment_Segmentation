@@ -1,0 +1,15 @@
+{
+    "voxel_size": 0.10,
+    "rail_radius": 0.50,
+    "grid_cell_size": 0.50,
+    "max_dist_m": 10.0,
+    "crown_width_m": 3.0,
+    "min_slope": 0.05,
+    "max_slope": 5.5,
+    "closing_radius": 2,
+    "min_cluster_size": 5,
+    "overlap": 10.0,
+    "tile_size": 500.0,
+    "ground_label": 2,
+    "rail_label": 11
+}
