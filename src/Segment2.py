@@ -423,7 +423,7 @@ class SegmentEmbankment:
         n = data.points.shape[0]
         surviving = np.arange(n)
 
-        mask = voxel_subsample_vectorized(data.points, voxel_size=0.05)
+        mask = voxel_subsample_vectorized(data.points, voxel_size=0.1)
         surviving = surviving[mask]
         data.subsample(mask)
 
