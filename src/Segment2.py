@@ -1,15 +1,18 @@
-from utils import voxel_subsample_vectorized, remove_outliers
+from utils import plot_cloud
+from utils import voxel_subsample_vectorized
 
 from typing import Union
 import pathlib as pth
 import numpy as np
 import laspy
+from scipy import ndimage as ndi
 from scipy.spatial import cKDTree
 import psycopg2
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from dataclasses import dataclass, field
 from tqdm import tqdm
+import json
 
 @dataclass
 class PCD:
@@ -32,10 +35,11 @@ class PCD:
         self.processed[mask] = True
 
     def copy(self):
-        """
-        returns full copy of the object
-        """
-        return PCD(points=self.points.copy(), labels=self.labels.copy())
+        return PCD(
+            points=self.points.copy(),
+            labels=self.labels.copy(),
+            processed=self.processed.copy()
+        )
 
 
 
@@ -46,11 +50,12 @@ class SegmentEmbankment:
                  verbose: bool = False):
     
         self.cfg = cfg
-        self.__db_param = self.__load_db_params(db_param_path)
+        self.__db_param = self._load_db_params(db_param_path)
         self.verbose = verbose
 
-    def __load_db_params(self, path: Union[str, pth.Path]):
+    def _load_db_params(self, path: Union[str, pth.Path]):
         path = pth.Path(path)
+        
         params = {}
         with open(path, "r") as f:
             for line in f:
@@ -59,6 +64,7 @@ class SegmentEmbankment:
                     continue
                 k, v = line.split("=", 1)
                 params[k.strip()] = v.strip()
+
         return params
 
     def load_data(self, las_path: Union[str, pth.Path]) -> PCD:
@@ -85,7 +91,16 @@ class SegmentEmbankment:
 
         return data
     
-    def _load_tracks_from_db(self, bbox):
+    @classmethod
+    def from_config(cls, cfg_path: Union[str, pth.Path], db_param_path: Union[str, pth.Path], verbose: bool = False):
+        cfg_path = pth.Path(cfg_path)
+        with open(cfg_path, 'r') as f:
+            cfg = json.load(f)
+
+        return cls(cfg=cfg, db_param_path=db_param_path, verbose=verbose)
+
+    
+    def __load_tracks_from_db(self, bbox):
         conn = psycopg2.connect(**self.__db_param)
         xmin, ymin, xmax, ymax = bbox
         query = """
@@ -116,7 +131,7 @@ class SegmentEmbankment:
         ymin = float(xyz[:,1].min())
         ymax = float(xyz[:,1].max())
         bbox = (xmin, ymin, xmax, ymax)
-        rails = self._load_tracks_from_db(bbox)
+        rails = self.__load_tracks_from_db(bbox)
         if len(rails) == 0:
             return np.zeros(xyz.shape[0], dtype=np.uint8)
         rail_xy = self._densify_lines(rails, step=0.5)
@@ -128,7 +143,65 @@ class SegmentEmbankment:
             raise ValueError("No rails detected.")
 
         return labels
-    
+    def _refine_mask_2d(self, xyz, mask):
+        """
+        Refine a binary point mask using 2D morphological operations.
+        Projects points onto a raster grid, applies binary closing to bridge
+        small gaps, fills interior holes, and removes small noise clusters.
+
+        Parameters
+        ----------
+        xyz : np.ndarray, shape (N, 3)
+            Point cloud coordinates (X, Y, Z) in metres.
+        mask : np.ndarray, shape (N,), dtype bool
+            Input binary mask to refine.
+        grid_cell_size : float, optional
+            Raster cell size in metres. Default: 0.5.
+        closing_radius : int, optional
+            Radius of the circular structuring element used for binary closing
+            (in grid cells). Default: 2.
+        min_cluster_size : int, optional
+            Connected components smaller than this (in pixels) are removed as noise.
+            Default: 10.
+
+        Returns
+        -------
+        np.ndarray, shape (N,), dtype bool
+            Refined binary mask mapped back onto the original points.
+        """
+        if self.verbose:
+            print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
+        
+        x, y = xyz[:, 0], xyz[:, 1]
+        x_min, y_min = x.min(), y.min()
+        nx = int(np.ceil((x.max() - x_min) / self.cfg["grid_cell_size"])) + 1
+        ny = int(np.ceil((y.max() - y_min) / self.cfg["grid_cell_size"])) + 1
+        
+        ix = np.clip(((x - x_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, nx - 1)
+        iy = np.clip(((y - y_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, ny - 1)
+
+        gm = np.zeros((ny, nx), dtype=bool)
+        gm[iy[mask], ix[mask]] = True
+
+        y_idx, x_idx = np.ogrid[-self.cfg["closing_radius"]:self.cfg["closing_radius"]+1, -self.cfg["closing_radius"]:self.cfg["closing_radius"]+1]
+        struct = x_idx**2 + y_idx**2 <= self.cfg["closing_radius"]**2
+
+        refined_gm = ndi.binary_closing(gm, structure=struct)
+
+        refined_gm = ndi.binary_fill_holes(refined_gm)
+
+        label_im, nb_labels = ndi.label(refined_gm)
+        sizes = ndi.sum(refined_gm, label_im, range(nb_labels + 1))
+        mask_size = sizes < self.cfg["min_cluster_size"]
+        remove_pixel = mask_size[label_im]
+        refined_gm[remove_pixel] = False
+
+        refined_mask_pts = refined_gm[iy, ix]
+        if self.verbose:
+            added = refined_mask_pts.sum() - mask.sum()
+            print(f"      Refinement complete. Change: {added:,} points.")
+        
+        return refined_mask_pts
     
     @staticmethod
     def _densify_lines(lines, step=0.5):
@@ -164,7 +237,98 @@ class SegmentEmbankment:
     
             yield mask
 
-    
+    def _grow_embankment_mask(self,
+                                xyz,
+                                track_labels):
+        """
+        Grow embankment mask outward from track points using iterative binary dilation on a 2D grid.
+
+        Parameters
+        ----------
+        xyz : np.ndarray, shape (N, 3)
+            Point cloud coordinates (X, Y, Z) in metres.
+        track_labels : np.ndarray, shape (N,), dtype uint8
+            Binary track labels (1 = rail, 0 = other). Output of `label_rail_points`.
+        grid_cell_size : float, optional
+            Raster cell size in metres. Default: 0.5.
+        max_dist_m : float, optional
+            Maximum embankment growth radius from track edge in metres. Default: 12.0.
+        crown_width_m : float, optional
+            Width of the flat track crown in metres. Slope check is skipped here. Default: 3.0.
+        min_slope : float, optional
+            Minimum terrain slope [m/m] to qualify as embankment slope. Default: 0.15.
+        max_slope : float, optional
+            Maximum terrain slope [m/m] to qualify as embankment slope. Default: 1.5.
+
+        Returns
+        -------
+        np.ndarray, shape (N,), dtype uint8
+            Binary embankment labels (1 = embankment, 0 = other).
+        """
+        if self.verbose:
+            print("Growing embankment mask...")
+        
+        new_final = np.zeros_like(track_labels, dtype=np.uint8)
+        mask = (track_labels == 1)
+        
+        if not mask.sum():
+            return new_final
+            
+        x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+        
+        x_min, y_min = x.min(), y.min()
+        nx = int(np.ceil((x.max() - x_min) / self.cfg["grid_cell_size"])) + 1
+        ny = int(np.ceil((y.max() - y_min) / self.cfg["grid_cell_size"])) + 1
+        ix = np.clip(((x - x_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, nx - 1)
+        iy = np.clip(((y - y_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, ny - 1)
+
+        z_grid = np.full((ny, nx), np.nan, dtype=np.float32)
+        order = np.argsort(z)
+        z_grid[iy[order], ix[order]] = z[order]
+
+        invalid_mask = np.isnan(z_grid)
+        if invalid_mask.all(): return new_final
+            
+        _, indices = ndi.distance_transform_edt(invalid_mask, return_distances=True, return_indices=True)
+        z_filled = z_grid[tuple(indices)]
+        z_smoothed = ndi.gaussian_filter(z_filled, sigma=1.0)
+
+        gy, gx = np.gradient(z_smoothed, self.cfg["grid_cell_size"])
+        grad = np.sqrt(gx**2 + gy**2)
+        
+        gm_tracks = np.zeros((ny, nx), dtype=bool)
+        gm_tracks[iy[mask], ix[mask]] = True
+
+        dist_from_track, nearest_track_idx = ndi.distance_transform_edt(~gm_tracks, return_distances=True, return_indices=True)
+        dist_from_track *= self.cfg["grid_cell_size"]
+
+        z_tracks_only = np.full((ny, nx), np.nan, dtype=np.float32)
+        z_tracks_only[gm_tracks] = z_smoothed[gm_tracks]
+
+        z_nearest_track = z_tracks_only[tuple(nearest_track_idx)]
+
+        valid_elevation = z_smoothed <= (z_nearest_track + 0.5)
+
+        valid_slope = (grad >= self.cfg["min_slope"]) & (grad <= self.cfg["max_slope"])
+        
+        valid_growth = (dist_from_track <= self.cfg["crown_width_m"]) | (valid_slope & valid_elevation)
+        
+        valid_growth &= (dist_from_track <= self.cfg["max_dist_m"])
+
+        struct = ndi.generate_binary_structure(2, 2)
+        expanded = gm_tracks.copy()
+        max_iters = int(self.cfg["max_dist_m"] / self.cfg["grid_cell_size"]) + 5
+        
+        for i in range(max_iters):
+            new_expanded = (ndi.binary_dilation(expanded, struct) & valid_growth) | gm_tracks
+            if np.array_equal(expanded, new_expanded): break
+            expanded = new_expanded
+
+        final_expanded_pts = expanded[iy, ix]
+        new_final[final_expanded_pts] = 1
+        
+        return new_final
+
     def _base_segm(self, data: PCD) -> PCD:
         track_labels = data.labels  # already set by _label_rail_points in segment()
 
@@ -179,7 +343,7 @@ class SegmentEmbankment:
         # 0 = ground, 1 = rail, 2 = embankment
         vis_labels = np.zeros(len(data.points), dtype=np.uint8)
         vis_labels[track_labels == 1] = 1
-        vis_labels[embankment_labels == 1] = 2
+        vis_labels[embankment_labels == 1] = 1
 
         data.labels = vis_labels
         return data
@@ -196,11 +360,12 @@ class SegmentEmbankment:
 
         return data
     
-    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0, chunk_size: int = 500_000) -> PCD:
+    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
+                        chunk_size: int = 500_000,
+                        class_weights: dict = {1: 3.}) -> PCD:
         """
-        Propagates labels from processed points to unprocessed ones via
-        Gaussian-weighted KNN voting. Tree built on small processed set,
-        large unprocessed set queried in chunks.
+        class_weights: e.g. {2: 3.0} to triple the vote weight for embankment.
+        Defaults to uniform if None.
         """
         processed_mask   = data.processed
         unprocessed_mask = ~processed_mask
@@ -211,29 +376,36 @@ class SegmentEmbankment:
         src_pts    = data.points[processed_mask]
         src_labels = data.labels[processed_mask]
 
-        src_probs = np.zeros((src_labels.shape[0], 2), dtype=np.float32)
-        src_probs[src_labels == 0, 0] = 1.0
-        src_probs[src_labels == 1, 1] = 1.0
+        n_classes = int(src_labels.max()) + 1
+        src_probs = np.zeros((len(src_labels), n_classes), dtype=np.float32)
+        src_probs[np.arange(len(src_labels)), src_labels] = 1.0
+
+        # per-class bias vector applied after aggregation
+        bias = np.ones(n_classes, dtype=np.float32)
+        if class_weights:
+            for cls, w in class_weights.items():
+                bias[cls] = w
 
         tree = cKDTree(src_pts)
-
         query_pts  = data.points[unprocessed_mask]
         out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
 
         pbar = range(0, query_pts.shape[0], chunk_size)
         if self.verbose:
-            pbar = tqdm(pbar, total=query_pts.shape[0], desc="Upsampling", unit="chunk", leave=False)
+            pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
+                        desc="Upsampling", unit="chunk", leave=False)
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
             chunk = query_pts[start:end]
 
-            dists, idxs  = tree.query(chunk, k=k)
-            weights       = np.exp(-0.5 * (dists / sigma) ** 2)
-            weights      /= weights.sum(axis=1, keepdims=True)
+            dists, idxs = tree.query(chunk, k=k)
+            weights      = np.exp(-0.5 * (dists / sigma) ** 2)
+            weights     /= weights.sum(axis=1, keepdims=True)
 
-            neighbor_probs        = src_probs[idxs]                              # (C, k, 2)
-            agg                   = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, 2)
+            neighbor_probs = src_probs[idxs]                                     # (C, k, n_classes)
+            agg            = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, n_classes)
+            agg           *= bias                                                 # boost minority classes
             out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
 
         data.labels[unprocessed_mask] = out_labels
@@ -246,24 +418,36 @@ class SegmentEmbankment:
         assumes data is already filtered (ground and rails only)
         """
 
+
         data.labels = self._label_rail_points(data.points)
+        if data.points.shape[0] == 0:
+            if self.verbose:
+                print("Point cloud is empty.")
+            return np.zeros_like(data.points, dtype=np.uint8)
+        elif np.unique(data.labels).shape[0] == 1:
+            if self.verbose:
+                print("No rails found.")
+            return np.zeros(data.points.shape[0], dtype=np.uint8)
+
+
 
         data.points -= data.points.mean(axis=0)
         data.points = data.points.astype(np.float32)
 
         data_org = data.copy()
         data_org.labels = np.zeros_like(data.labels, dtype=np.uint8)
+        data_org.processed = np.zeros(data.points.shape[0], dtype=bool)  # dodaj tę linię
 
         n = data.points.shape[0]
         surviving = np.arange(n)
 
-        mask = voxel_subsample_vectorized(data.points, voxel_size=0.5)
+        mask = voxel_subsample_vectorized(data.points, voxel_size=0.1)
         surviving = surviving[mask]
         data.subsample(mask)
 
-        mask = remove_outliers(data.points, nb_neighbors=40, std_ratio=2.0)
-        surviving = surviving[mask]
-        data.subsample(mask)
+        # mask = remove_outliers(data.points, nb_neighbors=40, std_ratio=2.0)
+        # surviving = surviving[mask]
+        # data.subsample(mask)
 
         # now surviving[i] = index in data_org of data.points[i]
         data_org.update_mask(surviving)
@@ -275,13 +459,37 @@ class SegmentEmbankment:
             data = self._big_segm(data)
             tiled_surviving = surviving[data.processed]
             data_org.labels[tiled_surviving] = data.labels[data.processed]
-        data_org = self._upsample_labels(data_org)
+        data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
 
         return data_org.labels
     
 def main():
-    from utils import plot_cloud
-    segmenter = SegmentEmbankment()
-    data = segmenter.load_data("/home/michal-siniarski/Dokumenty/PROGRAMMING/Embankement_Segmentation/data/raw/000000.las")
+    path = pth.Path("/mnt/DATA_SSD/BRIK/Testing_LLM_Class")
+    db_params_path = "db_params.txt"
+    embankment_config_path = "src/embankment_config.json"
+    verbose = True
+    segmenter = SegmentEmbankment.from_config(
+    cfg_path=embankment_config_path,
+    db_param_path=db_params_path,
+    verbose=verbose
+    )
+    for i, laz_path in enumerate(path.glob("*.laz")):
+        print(laz_path)
+        if verbose:
+            print(f"\n[{i+1}] {laz_path.name}")
 
-    labels = segmenter.segment(data)
+        data = segmenter.load_data(laz_path)
+        xyz_orig = data.points.copy()  # zapisz oryginalne punkty przed segment()
+
+        labels = segmenter.segment(data)
+
+        if len(labels) > 0:
+            xyz_vis = xyz_orig  # użyj oryginalnych punktów
+            xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+            xyz_vis[:, 2]  -= xyz_vis[:, 2].min()
+            xyz_vis = xyz_vis.astype(np.float32)
+            plot_cloud(xyz_vis, labels)
+
+
+if __name__ == "__main__":
+    main()
