@@ -1,4 +1,3 @@
-from utils import plot_cloud
 from utils import voxel_subsample_vectorized, remove_outliers
 
 from typing import Union
@@ -279,3 +278,10 @@ class SegmentEmbankment:
         data_org = self._upsample_labels(data_org)
 
         return data_org.labels
+    
+def main():
+    from utils import plot_cloud
+    segmenter = SegmentEmbankment()
+    data = segmenter.load_data("/home/michal-siniarski/Dokumenty/PROGRAMMING/Embankement_Segmentation/data/raw/000000.las")
+
+    labels = segmenter.segment(data)
