@@ -45,9 +45,9 @@ class PCD:
 
 class SegmentEmbankment:
     def __init__(self,
-                 cfg: dict,
-                 db_param_path: Union[str, pth.Path], 
-                 verbose: bool = False):
+                cfg: dict,
+                db_param_path: Union[str, pth.Path], 
+                verbose: bool = False):
     
         self.cfg = cfg
         self.__db_param = self._load_db_params(db_param_path)
