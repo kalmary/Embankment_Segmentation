@@ -80,7 +80,7 @@ class SegmentEmbankment:
         labels    = np.array(las.classification, dtype=np.int32)
 
     
-        ground_embankment_mask = (labels == self.cfg["ground_label"]) | (labels == self.cfg["rail_label"])
+        ground_embankmentn_mask = (labels == self.cfg["ground_label"]) | (labels == self.cfg["rail_label"])
         xyz = xyz[ground_embankment_mask]
         labels = labels[ground_embankment_mask]
         labels = np.zeros(labels.shape, dtype=np.uint8)
