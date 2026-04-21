@@ -1,5 +1,5 @@
 from utils import plot_cloud
-from utils import voxel_subsample_vectorized, remove_outliers
+from utils import voxel_subsample_vectorized
 
 from typing import Union
 import pathlib as pth
@@ -55,7 +55,6 @@ class SegmentEmbankment:
 
     def _load_db_params(self, path: Union[str, pth.Path]):
         path = pth.Path(path)
-        print(path)
         
         params = {}
         with open(path, "r") as f:
@@ -65,7 +64,7 @@ class SegmentEmbankment:
                     continue
                 k, v = line.split("=", 1)
                 params[k.strip()] = v.strip()
-        print(params)
+
         return params
 
     def load_data(self, las_path: Union[str, pth.Path]) -> PCD:
@@ -344,7 +343,7 @@ class SegmentEmbankment:
         # 0 = ground, 1 = rail, 2 = embankment
         vis_labels = np.zeros(len(data.points), dtype=np.uint8)
         vis_labels[track_labels == 1] = 1
-        vis_labels[embankment_labels == 1] = 2
+        vis_labels[embankment_labels == 1] = 1
 
         data.labels = vis_labels
         return data
@@ -361,11 +360,12 @@ class SegmentEmbankment:
 
         return data
     
-    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0, chunk_size: int = 500_000) -> PCD:
+    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
+                        chunk_size: int = 500_000,
+                        class_weights: dict = {1: 3.}) -> PCD:
         """
-        Propagates labels from processed points to unprocessed ones via
-        Gaussian-weighted KNN voting. Tree built on small processed set,
-        large unprocessed set queried in chunks.
+        class_weights: e.g. {2: 3.0} to triple the vote weight for embankment.
+        Defaults to uniform if None.
         """
         processed_mask   = data.processed
         unprocessed_mask = ~processed_mask
@@ -376,29 +376,36 @@ class SegmentEmbankment:
         src_pts    = data.points[processed_mask]
         src_labels = data.labels[processed_mask]
 
-        src_probs = np.zeros((src_labels.shape[0], 2), dtype=np.float32)
-        src_probs[src_labels == 0, 0] = 1.0
-        src_probs[src_labels == 1, 1] = 1.0
+        n_classes = int(src_labels.max()) + 1
+        src_probs = np.zeros((len(src_labels), n_classes), dtype=np.float32)
+        src_probs[np.arange(len(src_labels)), src_labels] = 1.0
+
+        # per-class bias vector applied after aggregation
+        bias = np.ones(n_classes, dtype=np.float32)
+        if class_weights:
+            for cls, w in class_weights.items():
+                bias[cls] = w
 
         tree = cKDTree(src_pts)
-
         query_pts  = data.points[unprocessed_mask]
         out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
 
         pbar = range(0, query_pts.shape[0], chunk_size)
         if self.verbose:
-            pbar = tqdm(pbar, total=query_pts.shape[0], desc="Upsampling", unit="chunk", leave=False)
+            pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
+                        desc="Upsampling", unit="chunk", leave=False)
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
             chunk = query_pts[start:end]
 
-            dists, idxs  = tree.query(chunk, k=k)
-            weights       = np.exp(-0.5 * (dists / sigma) ** 2)
-            weights      /= weights.sum(axis=1, keepdims=True)
+            dists, idxs = tree.query(chunk, k=k)
+            weights      = np.exp(-0.5 * (dists / sigma) ** 2)
+            weights     /= weights.sum(axis=1, keepdims=True)
 
-            neighbor_probs        = src_probs[idxs]                              # (C, k, 2)
-            agg                   = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, 2)
+            neighbor_probs = src_probs[idxs]                                     # (C, k, n_classes)
+            agg            = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, n_classes)
+            agg           *= bias                                                 # boost minority classes
             out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
 
         data.labels[unprocessed_mask] = out_labels
@@ -411,7 +418,18 @@ class SegmentEmbankment:
         assumes data is already filtered (ground and rails only)
         """
 
+
         data.labels = self._label_rail_points(data.points)
+        if data.points.shape[0] == 0:
+            if self.verbose:
+                print("Point cloud is empty.")
+            return np.zeros_like(data.points, dtype=np.uint8)
+        elif np.unique(data.labels).shape[0] == 1:
+            if self.verbose:
+                print("No rails found.")
+            return np.zeros(data.points.shape[0], dtype=np.uint8)
+
+
 
         data.points -= data.points.mean(axis=0)
         data.points = data.points.astype(np.float32)
@@ -441,14 +459,16 @@ class SegmentEmbankment:
             data = self._big_segm(data)
             tiled_surviving = surviving[data.processed]
             data_org.labels[tiled_surviving] = data.labels[data.processed]
-        data_org = self._upsample_labels(data_org)
+        data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
+
+        print(data_org.labels.shape)
 
         return data_org.labels
     
 def main():
-    path = pth.Path("/home/jakub-szota/Pobrane")
-    db_params_path = "/home/jakub-szota/Dokumenty/Embankment_Segmentation/src/db_params.txt"
-    embankment_config_path = "/home/jakub-szota/Dokumenty/Embankment_Segmentation/src/embankment_config.json"
+    path = pth.Path("/mnt/DATA_SSD/BRIK/Testing_LLM_Class")
+    db_params_path = "db_params.txt"
+    embankment_config_path = "src/embankment_config.json"
     verbose = True
     segmenter = SegmentEmbankment.from_config(
     cfg_path=embankment_config_path,
@@ -456,11 +476,13 @@ def main():
     verbose=verbose
     )
     for i, laz_path in enumerate(path.glob("*.laz")):
+        print(laz_path)
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
         data = segmenter.load_data(laz_path)
         xyz_orig = data.points.copy()  # zapisz oryginalne punkty przed segment()
+
         labels = segmenter.segment(data)
 
         if len(labels) > 0:
