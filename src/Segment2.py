@@ -13,6 +13,7 @@ from shapely.geometry import LineString, MultiLineString
 from dataclasses import dataclass, field
 from tqdm import tqdm
 import json
+from typing import Optional
 
 @dataclass
 class PCD:
@@ -78,18 +79,12 @@ class SegmentEmbankment:
         ], axis=1)
     
         labels    = np.array(las.classification, dtype=np.int32)
-
-    
-        ground_embankmentn_mask = (labels == self.cfg["ground_label"]) | (labels == self.cfg["rail_label"])
-        xyz = xyz[ground_embankment_mask]
-        labels = labels[ground_embankment_mask]
-        labels = np.zeros(labels.shape, dtype=np.uint8)
-
         del las
 
         data = PCD(xyz, labels)
 
         return data
+    
     
     @classmethod
     def from_config(cls, cfg_path: Union[str, pth.Path], db_param_path: Union[str, pth.Path], verbose: bool = False):
@@ -413,82 +408,98 @@ class SegmentEmbankment:
 
 
     
-    def segment(self, data: PCD) -> np.ndarray:
+    def segment(self, data: Optional[PCD] = None, points: Optional[np.ndarray] = None, labels: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        assumes data is already filtered (ground and rails only)
+        Accepts a full PCD (all classes). Filters to ground + rail internally.
+        Returns labels for the full PCD: original labels preserved for all
+        non-ground/rail points; ground points reclassified as embankment get label 10.
         """
+        full_labels = data.labels.copy()
 
+        # --- filter to ground + rail (mirrors load_data logic) ---
+        ground_rail_mask = (
+            (full_labels == self.cfg["ground_label"]) |
+            (full_labels == self.cfg["rail_label"])
+        )
+        ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
 
-        data.labels = self._label_rail_points(data.points)
-        if data.points.shape[0] == 0:
+        filtered = PCD(
+            points=data.points[ground_rail_mask].copy(),
+            labels=np.zeros(ground_rail_mask.sum(), dtype=np.uint8),
+        )
+
+        if filtered.points.shape[0] == 0:
             if self.verbose:
-                print("Point cloud is empty.")
-            return np.zeros_like(data.points, dtype=np.uint8)
-        elif np.unique(data.labels).shape[0] == 1:
+                print("Point cloud is empty after filtering.")
+            return full_labels
+
+        # --- rail labelling & early-exit guards ---
+        filtered.labels = self._label_rail_points(filtered.points)
+
+        if np.unique(filtered.labels).shape[0] == 1:
             if self.verbose:
                 print("No rails found.")
-            return np.zeros(data.points.shape[0], dtype=np.uint8)
+            return full_labels
 
+        # --- centre coords ---
+        filtered.points -= filtered.points.mean(axis=0)
+        filtered.points = filtered.points.astype(np.float32)
 
+        data_org = filtered.copy()
+        data_org.labels = np.zeros(filtered.points.shape[0], dtype=np.uint8)
+        data_org.processed = np.zeros(filtered.points.shape[0], dtype=bool)
 
-        data.points -= data.points.mean(axis=0)
-        data.points = data.points.astype(np.float32)
-
-        data_org = data.copy()
-        data_org.labels = np.zeros_like(data.labels, dtype=np.uint8)
-        data_org.processed = np.zeros(data.points.shape[0], dtype=bool)  # dodaj tę linię
-
-        n = data.points.shape[0]
+        n = filtered.points.shape[0]
         surviving = np.arange(n)
 
-        mask = voxel_subsample_vectorized(data.points, voxel_size=0.1)
-        surviving = surviving[mask]
-        data.subsample(mask)
-
-        # mask = remove_outliers(data.points, nb_neighbors=40, std_ratio=2.0)
-        # surviving = surviving[mask]
-        # data.subsample(mask)
-
-        # now surviving[i] = index in data_org of data.points[i]
+        vox_mask = voxel_subsample_vectorized(filtered.points, voxel_size=0.1)
+        surviving = surviving[vox_mask]
+        filtered.subsample(vox_mask)
         data_org.update_mask(surviving)
 
-        if data.points.shape[0] < 5*10e6:
-            data = self._base_segm(data)
-            data_org.labels[surviving] = data.labels
+        if filtered.points.shape[0] < 5 * 10e6:
+            filtered = self._base_segm(filtered)
+            data_org.labels[surviving] = filtered.labels
         else:
-            data = self._big_segm(data)
-            tiled_surviving = surviving[data.processed]
-            data_org.labels[tiled_surviving] = data.labels[data.processed]
+            filtered = self._big_segm(filtered)
+            tiled_surviving = surviving[filtered.processed]
+            data_org.labels[tiled_surviving] = filtered.labels[filtered.processed]
+
         data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
 
-        return data_org.labels
+        # --- write embankment back into full-PCD labels ---
+        # _base_segm vis_labels: 0 = ground, 1 = rail or embankment
+        embankment_global = ground_rail_idx[data_org.labels == 1]
+        full_labels[embankment_global] = 10
+
+        return full_labels
     
 def main():
     path = pth.Path("/mnt/DATA_SSD/BRIK/Testing_LLM_Class")
     db_params_path = "db_params.txt"
     embankment_config_path = "src/embankment_config.json"
     verbose = True
+
     segmenter = SegmentEmbankment.from_config(
-    cfg_path=embankment_config_path,
-    db_param_path=db_params_path,
-    verbose=verbose
+        cfg_path=embankment_config_path,
+        db_param_path=db_params_path,
+        verbose=verbose,
     )
+
     for i, laz_path in enumerate(path.glob("*.laz")):
-        print(laz_path)
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
-        data = segmenter.load_data(laz_path)
-        xyz_orig = data.points.copy()  # zapisz oryginalne punkty przed segment()
+        data = segmenter.load_data(laz_path)   # still loads full PCD
+        xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)
+        labels = segmenter.segment(data)        # full-PCD labels back
 
-        if len(labels) > 0:
-            xyz_vis = xyz_orig  # użyj oryginalnych punktów
-            xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
-            xyz_vis[:, 2]  -= xyz_vis[:, 2].min()
-            xyz_vis = xyz_vis.astype(np.float32)
-            plot_cloud(xyz_vis, labels)
+        xyz_vis = xyz_orig.copy()
+        xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+        xyz_vis[:, 2] -= xyz_vis[:, 2].min()
+        xyz_vis = xyz_vis.astype(np.float32)
+        plot_cloud(xyz_vis, labels)
 
 
 if __name__ == "__main__":
