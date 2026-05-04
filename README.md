@@ -46,13 +46,29 @@ uv pip install -r requirements.txt
 
 # 4. Usage <a name="usage"></a>
 
+Segmentation is used as a Python class. Load your point cloud however you prefer, 
+then instantiate `SegmentEmbankment` and call `segment()` on your data.
+
+```python
+from segment import SegmentEmbankment, PCD
+import numpy as np
+
+segmenter = SegmentEmbankment.from_config(
+    cfg_path="embankment_config.json",
+    db_param_path="db_params.txt",
+)
+
+# Load your own point cloud — xyz: (N, 3) float array, labels: (N,) int array
+data = PCD(points=xyz, labels=labels)
+
+# Points classified as embankment receive label 10
+result_labels = segmenter.segment(data)
+```
+
+For configuration details see the [Configuration](#configuration) section below.
 Script for segmentation of railway embankments from LiDAR point clouds. The `SegmentEmbankment` 
 class performs 2D raster-based region growing seeded from rail geometry fetched automatically 
 from a PostGIS database. To do so run:
-
-```bash
-python src/Segment_embankment.py
-```
 
 ---
 
