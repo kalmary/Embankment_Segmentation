@@ -51,7 +51,7 @@ class performs 2D raster-based region growing seeded from rail geometry fetched 
 from a PostGIS database. To do so run:
 
 ```bash
-python src/Segment.py
+python src/Segment_embankment.py
 ```
 
 ---
