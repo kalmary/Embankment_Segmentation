@@ -1,4 +1,4 @@
-![Banner](Embankment_segmentation/img/Banner.png)
+![Banner](/src/img/Banner.png)
 
 # Table of contents
 1. [Overview](#overview)
