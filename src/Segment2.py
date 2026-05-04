@@ -16,6 +16,7 @@ from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from dataclasses import dataclass, field
 from shapely.geometry import LineString, MultiLineString
+from typing import Optional
 
 @dataclass
 class PCD:
@@ -505,28 +506,19 @@ def main():
     )
 
     for i, laz_path in enumerate(path.glob("*.laz")):
-        print(laz_path)
-
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
-        data = segmenter.load_data(laz_path)
+        data = segmenter.load_data(laz_path)   # still loads full PCD
         xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)
+        labels = segmenter.segment(data)        # full-PCD labels back
 
-        if len(labels) > 0:
-            xyz_vis = xyz_orig
-            xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
-            xyz_vis[:, 2]  -= xyz_vis[:, 2].min()
-            xyz_vis = xyz_vis.astype(np.float32)
-
-            vis_mask = (
-                (labels == segmenter.cfg["ground_label"]) |
-                (labels == segmenter.cfg["rail_label"]) |
-                (labels == 10)
-            )
-            plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+        xyz_vis = xyz_orig.copy()
+        xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+        xyz_vis[:, 2] -= xyz_vis[:, 2].min()
+        xyz_vis = xyz_vis.astype(np.float32)
+        plot_cloud(xyz_vis, labels)
 
 
 if __name__ == "__main__":
