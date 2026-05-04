@@ -495,8 +495,8 @@ class SegmentEmbankment:
     
 def main():
     path = pth.Path("/home/jakub-szota/Pobrane")
-    db_params_path = "db_params.txt"
-    embankment_config_path = "embankment_config.json"
+    db_params_path = "src/db_params.txt"
+    embankment_config_path = "src/embankment_config.json"
     verbose = True
 
     segmenter = SegmentEmbankment.from_config(
@@ -509,16 +509,30 @@ def main():
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
-        data = segmenter.load_data(laz_path)   # still loads full PCD
+        original_las = laspy.read(laz_path)          # ← raz na początku
+        data = segmenter.load_data(laz_path)
         xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)        # full-PCD labels back
+        labels = segmenter.segment(data)
 
         xyz_vis = xyz_orig.copy()
         xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
         xyz_vis[:, 2] -= xyz_vis[:, 2].min()
         xyz_vis = xyz_vis.astype(np.float32)
-        plot_cloud(xyz_vis, labels)
+
+        vis_mask = (
+            (labels == segmenter.cfg["ground_label"]) |
+            (labels == 10)
+        )
+        #plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+
+        original_las.classification = labels.astype(np.uint8)
+        out_path = laz_path.parent / (laz_path.stem + "_segmented_embankment.laz")
+        original_las.write(out_path)
+        if verbose:
+            print(f"  Saved: {out_path.name}")
+
+
 
 
 if __name__ == "__main__":

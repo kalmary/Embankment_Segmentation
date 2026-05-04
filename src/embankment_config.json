@@ -13,6 +13,6 @@
     "min_cluster_size": 50,
     "overlap": 10.0,
     "tile_size": 500.0,
-    "ground_label": 1,
-    "rail_label": 0
+    "ground_label": 2,
+    "rail_label": 11
 }
