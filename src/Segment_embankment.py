@@ -1,5 +1,9 @@
-from utils import plot_cloud
-from utils import voxel_subsample_vectorized
+try:
+    from .utils.plot_cloud import plot_cloud
+    from .utils.pcd_tools import voxel_subsample_vectorized
+except ImportError:
+    from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
+    from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
 
 import json
 import laspy
