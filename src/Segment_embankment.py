@@ -437,6 +437,9 @@ class SegmentEmbankment:
         Returns labels for the full PCD: original labels preserved for all
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
+        if data is None:
+            data = PCD(points=points, labels=labels)
+    
         full_labels = data.labels.copy()
 
         # --- filter to ground + rail (mirrors load_data logic) ---
