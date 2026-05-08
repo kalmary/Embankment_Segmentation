@@ -1,5 +1,9 @@
-from utils import plot_cloud
-from utils import voxel_subsample_vectorized
+try:
+    from .utils.plot_cloud import plot_cloud
+    from .utils.pcd_tools import voxel_subsample_vectorized
+except ImportError:
+    from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
+    from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
 
 import json
 import laspy
@@ -433,6 +437,9 @@ class SegmentEmbankment:
         Returns labels for the full PCD: original labels preserved for all
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
+        if data is None:
+            data = PCD(points=points, labels=labels)
+    
         full_labels = data.labels.copy()
 
         # --- filter to ground + rail (mirrors load_data logic) ---
