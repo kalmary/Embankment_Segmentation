@@ -433,6 +433,11 @@ class SegmentEmbankment:
             agg            = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, n_classes)
             agg           *= bias                                                 # boost minority classes
             out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
+        
+        try:
+            pbar.close()
+        except Exception:
+            pass
 
         data.labels[unprocessed_mask] = out_labels
         return data
