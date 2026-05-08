@@ -2,8 +2,15 @@ try:
     from .utils.plot_cloud import plot_cloud
     from .utils.pcd_tools import voxel_subsample_vectorized
 except ImportError:
-    from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
-    from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
+
+    try:
+        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
+        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
+    except ImportError:
+        from utils.plot_cloud import plot_cloud
+        from utils.pcd_tools import voxel_subsample_vectorized
+
+    
 
 import json
 import laspy
@@ -172,8 +179,8 @@ class SegmentEmbankment:
         np.ndarray, shape (N,), dtype bool
             Refined binary mask mapped back onto the original points.
         """
-        if self.verbose:
-            print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
+        # if self.verbose:
+        #     print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
         
         x, y = xyz[:, 0], xyz[:, 1]
         x_min, y_min = x.min(), y.min()
@@ -206,9 +213,9 @@ class SegmentEmbankment:
         refined_gm[remove_pixel] = False
 
         refined_mask_pts = refined_gm[iy, ix]
-        if self.verbose:
-            added = refined_mask_pts.sum() - mask.sum()
-            print(f"      Refinement complete. Change: {added:,} points.")
+        # if self.verbose:
+        #     added = refined_mask_pts.sum() - mask.sum()
+        #     print(f"      Refinement complete. Change: {added:,} points.")
         
         return refined_mask_pts
     
@@ -275,8 +282,8 @@ class SegmentEmbankment:
         np.ndarray, shape (N,), dtype uint8
             Binary embankment labels (1 = embankment, 0 = other).
         """
-        if self.verbose:
-            print("Growing embankment mask...")
+        # if self.verbose:
+        #     print("Growing embankment mask...")
         
         new_final = np.zeros_like(track_labels, dtype=np.uint8)
         mask = (track_labels == 1)
@@ -442,12 +449,14 @@ class SegmentEmbankment:
     
         full_labels = data.labels.copy()
 
+
         # --- filter to ground + rail (mirrors load_data logic) ---
         ground_rail_mask = (
             (full_labels == self.cfg["ground_label"]) |
             (full_labels == self.cfg["rail_label"])
         )
         ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
+        
 
         filtered = PCD(
             points=data.points[ground_rail_mask].copy(),
@@ -455,16 +464,16 @@ class SegmentEmbankment:
         )
 
         if filtered.points.shape[0] == 0:
-            if self.verbose:
-                print("Point cloud is empty after filtering.")
+            # if self.verbose:
+            #     print("Point cloud is empty after filtering.")
             return full_labels
 
         # --- rail labelling & early-exit guards ---
         filtered.labels = self._label_rail_points(filtered.points)
 
         if np.unique(filtered.labels).shape[0] == 1:
-            if self.verbose:
-                print("No rails found.")
+            # if self.verbose:
+            #     print("No rails found.")
             return full_labels
 
         # --- centre coords ---
@@ -501,7 +510,7 @@ class SegmentEmbankment:
         return full_labels
     
 def main():
-    path = pth.Path("/home/jakub-szota/Pobrane")
+    laz_path = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/Grajewo_michal_mod.laz")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
     verbose = True
@@ -512,34 +521,25 @@ def main():
         verbose=verbose,
     )
 
-    for i, laz_path in enumerate(path.glob("*.laz")):
-        if verbose:
-            print(f"\n[{i+1}] {laz_path.name}")
+    
 
-        original_las = laspy.read(laz_path)          # ← raz na początku
-        data = segmenter.load_data(laz_path)
-        xyz_orig = data.points.copy()
+    original_las = laspy.read(laz_path)          # ← raz na początku
+    data = segmenter.load_data(laz_path)
+    xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)
+    labels = segmenter.segment(data)
 
-        xyz_vis = xyz_orig.copy()
-        xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
-        xyz_vis[:, 2] -= xyz_vis[:, 2].min()
-        xyz_vis = xyz_vis.astype(np.float32)
+    xyz_vis = xyz_orig.copy()
+    xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+    xyz_vis[:, 2] -= xyz_vis[:, 2].min()
+    xyz_vis = xyz_vis.astype(np.float32)
 
-        vis_mask = (
-            (labels == segmenter.cfg["ground_label"]) |
-            (labels == 10)
-        )
-        #plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+    vis_mask = (
+        (labels == segmenter.cfg["ground_label"]) |
+        (labels == 10)
+    )
 
-        original_las.classification = labels.astype(np.uint8)
-        out_path = laz_path.parent / (laz_path.stem + "_segmented_embankment.laz")
-        original_las.write(out_path)
-        if verbose:
-            print(f"  Saved: {out_path.name}")
-
-
+    plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
 
 if __name__ == "__main__":
