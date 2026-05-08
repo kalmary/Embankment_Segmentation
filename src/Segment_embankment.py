@@ -241,7 +241,7 @@ class SegmentEmbankment:
     
         xy_starts = [(x0, y0) for x0 in x_starts for y0 in y_starts]
         if self.verbose:
-            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False)
+            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False, position=1)
         else:
             pbar = xy_starts
         
@@ -355,22 +355,23 @@ class SegmentEmbankment:
         return new_final
 
     def _base_segm(self, data: PCD) -> PCD:
+        with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=2, disable=not self.verbose) as pbar:
+            track_labels = data.labels  
 
-        track_labels = data.labels  
+            embankment_labels = self._grow_embankment_mask(data.points, track_labels)
 
-        embankment_labels = self._grow_embankment_mask(data.points, track_labels)
+            mask2fix = embankment_labels == 1
+            mask2d   = self._refine_mask_2d(data.points, mask2fix)
 
-        mask2fix = embankment_labels == 1
-        mask2d   = self._refine_mask_2d(data.points, mask2fix)
+            embankment_labels = np.zeros_like(embankment_labels)
+            embankment_labels[mask2d] = 1
 
-        embankment_labels = np.zeros_like(embankment_labels)
-        embankment_labels[mask2d] = 1
+            vis_labels = np.zeros(len(data.points), dtype=np.uint8)
+            vis_labels[track_labels == 1] = 1
+            vis_labels[embankment_labels == 1] = 1
 
-        vis_labels = np.zeros(len(data.points), dtype=np.uint8)
-        vis_labels[track_labels == 1] = 1
-        vis_labels[embankment_labels == 1] = 1
-
-        data.labels = vis_labels
+            data.labels = vis_labels
+            pbar.update(1)
         return data
     
     def _big_segm(self, data: PCD) -> PCD:
@@ -418,7 +419,7 @@ class SegmentEmbankment:
         pbar = range(0, query_pts.shape[0], chunk_size)
         if self.verbose:
             pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
-                        desc="Upsampling", unit="chunk", leave=False)
+                        desc="Upsampling", unit="chunk", leave=False, position=1)
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
