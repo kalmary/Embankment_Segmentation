@@ -308,7 +308,7 @@ class SegmentEmbankment:
             
         _, indices = ndi.distance_transform_edt(invalid_mask, return_distances=True, return_indices=True)
         z_filled = z_grid[tuple(indices)]
-        z_smoothed = ndi.gaussian_filter(z_filled, sigma=1.0)
+        z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
 
         gy, gx = np.gradient(z_smoothed, self.cfg["grid_cell_size"])
         grad = np.sqrt(gx**2 + gy**2)
