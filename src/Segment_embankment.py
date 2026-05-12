@@ -419,7 +419,7 @@ class SegmentEmbankment:
         pbar = range(0, query_pts.shape[0], chunk_size)
         if self.verbose:
             pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
-                        desc="Upsampling", unit="chunk", leave=False, position=1)
+                        desc="Embankment upsampling", unit="chunk", leave=False, position=1)
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
