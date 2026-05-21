@@ -509,8 +509,14 @@ class SegmentEmbankment:
         data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
 
         # --- write embankment back into full-PCD labels ---
-        # _base_segm vis_labels: 0 = ground, 1 = rail or embankment
-        embankment_global = ground_rail_idx[data_org.labels == 1]
+        # _base_segm vis_labels: 0 = ground, 1 = rail seed or embankment.
+        # Only original ground points should become embankment; original rail
+        # points keep their rail class after being used as growth seeds.
+        embankment_local = (
+            (data_org.labels == 1) &
+            (full_labels[ground_rail_idx] == self.cfg["ground_label"])
+        )
+        embankment_global = ground_rail_idx[embankment_local]
         full_labels[embankment_global] = 10
 
         return full_labels
