@@ -134,6 +134,9 @@ class SegmentEmbankment:
     
 
     def _label_rail_points(self, xyz, rail_radius: float=0.5):
+        if xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.uint8)
+
         xmin = float(xyz[:,0].min())
         xmax = float(xyz[:,0].max())
         ymin = float(xyz[:,1].min())
@@ -143,12 +146,12 @@ class SegmentEmbankment:
         if len(rails) == 0:
             return np.zeros(xyz.shape[0], dtype=np.uint8)
         rail_xy = self._densify_lines(rails, step=0.5)
+        if rail_xy.shape[0] == 0:
+            return np.zeros(xyz.shape[0], dtype=np.uint8)
+
         tree = cKDTree(rail_xy)
         dist, _ = tree.query(xyz[:, :2])
         labels = (dist <= rail_radius).astype(np.uint8)
-
-        if np.unique(labels).shape[0]<2:
-            raise ValueError("No rails detected.")
 
         return labels
     
@@ -179,6 +182,9 @@ class SegmentEmbankment:
         np.ndarray, shape (N,), dtype bool
             Refined binary mask mapped back onto the original points.
         """
+        if xyz.shape[0] == 0 or mask.sum() == 0:
+            return np.zeros(xyz.shape[0], dtype=bool)
+
         # if self.verbose:
         #     print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
         
@@ -233,6 +239,8 @@ class SegmentEmbankment:
         return np.array(pts)
     
     def _iter_tiles(self, xyz: np.ndarray, tile_size: float=40.0, overlap: float=10.0, min_points: int=1024): 
+        if xyz.shape[0] == 0:
+            return
 
         mins     = xyz[:, :2].min(0)
         maxs     = xyz[:, :2].max(0)
@@ -401,6 +409,8 @@ class SegmentEmbankment:
 
         src_pts    = data.points[processed_mask]
         src_labels = data.labels[processed_mask]
+        if src_pts.shape[0] == 0 or src_labels.shape[0] == 0:
+            return data
 
         n_classes = int(src_labels.max()) + 1
         src_probs = np.zeros((len(src_labels), n_classes), dtype=np.float32)
@@ -452,6 +462,8 @@ class SegmentEmbankment:
         """
         if data is None:
             data = PCD(points=points, labels=labels)
+        if data.points.shape[0] == 0:
+            return data.labels.copy()
     
         full_labels = data.labels.copy()
 

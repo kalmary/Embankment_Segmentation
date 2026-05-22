@@ -11,6 +11,9 @@ def remove_outliers(points: np.ndarray, nb_neighbors:int=40, std_ratio:float=2.)
 
  
 def voxel_subsample_vectorized(xyz, voxel_size=0.10):
+    if xyz.shape[0] == 0:
+        return np.zeros(0, dtype=bool)
+
     keys     = np.floor(xyz / voxel_size).astype(np.int32)
     centers  = (keys + 0.5) * voxel_size
     dists_sq = np.sum((xyz - centers) ** 2, axis=1)
