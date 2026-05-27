@@ -2,8 +2,15 @@ try:
     from .utils.plot_cloud import plot_cloud
     from .utils.pcd_tools import voxel_subsample_vectorized
 except ImportError:
-    from utils.plot_cloud import plot_cloud
-    from utils.pcd_tools import voxel_subsample_vectorized
+
+    try:
+        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
+        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
+    except ImportError:
+        from utils.plot_cloud import plot_cloud
+        from utils.pcd_tools import voxel_subsample_vectorized
+
+    
 
 import json
 import laspy
@@ -127,6 +134,9 @@ class SegmentEmbankment:
     
 
     def _label_rail_points(self, xyz, rail_radius: float=0.5):
+        if xyz.shape[0] == 0:
+            return np.zeros(0, dtype=np.uint8)
+
         xmin = float(xyz[:,0].min())
         xmax = float(xyz[:,0].max())
         ymin = float(xyz[:,1].min())
@@ -136,12 +146,12 @@ class SegmentEmbankment:
         if len(rails) == 0:
             return np.zeros(xyz.shape[0], dtype=np.uint8)
         rail_xy = self._densify_lines(rails, step=0.5)
+        if rail_xy.shape[0] == 0:
+            return np.zeros(xyz.shape[0], dtype=np.uint8)
+
         tree = cKDTree(rail_xy)
         dist, _ = tree.query(xyz[:, :2])
         labels = (dist <= rail_radius).astype(np.uint8)
-
-        if np.unique(labels).shape[0]<2:
-            raise ValueError("No rails detected.")
 
         return labels
     
@@ -172,8 +182,11 @@ class SegmentEmbankment:
         np.ndarray, shape (N,), dtype bool
             Refined binary mask mapped back onto the original points.
         """
-        if self.verbose:
-            print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
+        if xyz.shape[0] == 0 or mask.sum() == 0:
+            return np.zeros(xyz.shape[0], dtype=bool)
+
+        # if self.verbose:
+        #     print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
         
         x, y = xyz[:, 0], xyz[:, 1]
         x_min, y_min = x.min(), y.min()
@@ -206,9 +219,9 @@ class SegmentEmbankment:
         refined_gm[remove_pixel] = False
 
         refined_mask_pts = refined_gm[iy, ix]
-        if self.verbose:
-            added = refined_mask_pts.sum() - mask.sum()
-            print(f"      Refinement complete. Change: {added:,} points.")
+        # if self.verbose:
+        #     added = refined_mask_pts.sum() - mask.sum()
+        #     print(f"      Refinement complete. Change: {added:,} points.")
         
         return refined_mask_pts
     
@@ -226,6 +239,8 @@ class SegmentEmbankment:
         return np.array(pts)
     
     def _iter_tiles(self, xyz: np.ndarray, tile_size: float=40.0, overlap: float=10.0, min_points: int=1024): 
+        if xyz.shape[0] == 0:
+            return
 
         mins     = xyz[:, :2].min(0)
         maxs     = xyz[:, :2].max(0)
@@ -234,7 +249,7 @@ class SegmentEmbankment:
     
         xy_starts = [(x0, y0) for x0 in x_starts for y0 in y_starts]
         if self.verbose:
-            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False)
+            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False, position=1)
         else:
             pbar = xy_starts
         
@@ -275,8 +290,8 @@ class SegmentEmbankment:
         np.ndarray, shape (N,), dtype uint8
             Binary embankment labels (1 = embankment, 0 = other).
         """
-        if self.verbose:
-            print("Growing embankment mask...")
+        # if self.verbose:
+        #     print("Growing embankment mask...")
         
         new_final = np.zeros_like(track_labels, dtype=np.uint8)
         mask = (track_labels == 1)
@@ -301,6 +316,7 @@ class SegmentEmbankment:
             
         _, indices = ndi.distance_transform_edt(invalid_mask, return_distances=True, return_indices=True)
         z_filled = z_grid[tuple(indices)]
+        z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
         z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
 
         gy, gx = np.gradient(z_smoothed, self.cfg["grid_cell_size"])
@@ -348,22 +364,23 @@ class SegmentEmbankment:
         return new_final
 
     def _base_segm(self, data: PCD) -> PCD:
+        with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=2, disable=not self.verbose) as pbar:
+            track_labels = data.labels  
 
-        track_labels = data.labels  
+            embankment_labels = self._grow_embankment_mask(data.points, track_labels)
 
-        embankment_labels = self._grow_embankment_mask(data.points, track_labels)
+            mask2fix = embankment_labels == 1
+            mask2d   = self._refine_mask_2d(data.points, mask2fix)
 
-        mask2fix = embankment_labels == 1
-        mask2d   = self._refine_mask_2d(data.points, mask2fix)
+            embankment_labels = np.zeros_like(embankment_labels)
+            embankment_labels[mask2d] = 1
 
-        embankment_labels = np.zeros_like(embankment_labels)
-        embankment_labels[mask2d] = 1
+            vis_labels = np.zeros(len(data.points), dtype=np.uint8)
+            vis_labels[track_labels == 1] = 1
+            vis_labels[embankment_labels == 1] = 1
 
-        vis_labels = np.zeros(len(data.points), dtype=np.uint8)
-        vis_labels[track_labels == 1] = 1
-        vis_labels[embankment_labels == 1] = 1
-
-        data.labels = vis_labels
+            data.labels = vis_labels
+            pbar.update(1)
         return data
     
     def _big_segm(self, data: PCD) -> PCD:
@@ -438,6 +455,8 @@ class SegmentEmbankment:
 
         src_pts    = data.points[processed_mask]
         src_labels = data.labels[processed_mask]
+        if src_pts.shape[0] == 0 or src_labels.shape[0] == 0:
+            return data
 
         n_classes = int(src_labels.max()) + 1
         src_probs = np.zeros((len(src_labels), n_classes), dtype=np.float32)
@@ -456,7 +475,7 @@ class SegmentEmbankment:
         pbar = range(0, query_pts.shape[0], chunk_size)
         if self.verbose:
             pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
-                        desc="Upsampling", unit="chunk", leave=False)
+                        desc="Embankment upsampling", unit="chunk", leave=False, position=1)
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
@@ -470,6 +489,11 @@ class SegmentEmbankment:
             agg            = (weights[:, :, None] * neighbor_probs).sum(axis=1)  # (C, n_classes)
             agg           *= bias                                                 # boost minority classes
             out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
+        
+        try:
+            pbar.close()
+        except Exception:
+            pass
 
         data.labels[unprocessed_mask] = out_labels
         return data
@@ -484,8 +508,11 @@ class SegmentEmbankment:
         """
         if data is None:
             data = PCD(points=points, labels=labels)
+        if data.points.shape[0] == 0:
+            return data.labels.copy()
     
         full_labels = data.labels.copy()
+
 
         # --- filter to ground + rail (mirrors load_data logic) ---
         ground_rail_mask = (
@@ -493,6 +520,7 @@ class SegmentEmbankment:
             (full_labels == self.cfg["rail_label"])
         )
         ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
+        
 
         filtered = PCD(
             points=data.points[ground_rail_mask].copy(),
@@ -500,16 +528,16 @@ class SegmentEmbankment:
         )
 
         if filtered.points.shape[0] == 0:
-            if self.verbose:
-                print("Point cloud is empty after filtering.")
+            # if self.verbose:
+            #     print("Point cloud is empty after filtering.")
             return full_labels
 
         # --- rail labelling & early-exit guards ---
         filtered.labels = self._label_rail_points(filtered.points)
 
         if np.unique(filtered.labels).shape[0] == 1:
-            if self.verbose:
-                print("No rails found.")
+            # if self.verbose:
+            #     print("No rails found.")
             return full_labels
 
         # --- centre coords ---
@@ -539,8 +567,14 @@ class SegmentEmbankment:
         data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
 
         # --- write embankment back into full-PCD labels ---
-        # _base_segm vis_labels: 0 = ground, 1 = rail or embankment
-        embankment_global = ground_rail_idx[data_org.labels == 1]
+        # _base_segm vis_labels: 0 = ground, 1 = rail seed or embankment.
+        # Only original ground points should become embankment; original rail
+        # points keep their rail class after being used as growth seeds.
+        embankment_local = (
+            (data_org.labels == 1) &
+            (full_labels[ground_rail_idx] == self.cfg["ground_label"])
+        )
+        embankment_global = ground_rail_idx[embankment_local]
         full_labels[embankment_global] = 10
         full_labels = self._absorb_class_into_embankment(data.points, full_labels)
 
@@ -558,20 +592,18 @@ def main():
         verbose=verbose,
     )
 
-    for i, laz_path in enumerate(path.glob("*.laz")):
-        if verbose:
-            print(f"\n[{i+1}] {laz_path.name}")
+    
 
-        original_las = laspy.read(laz_path)          # ← raz na początku
-        data = segmenter.load_data(laz_path)
-        xyz_orig = data.points.copy()
+    original_las = laspy.read(laz_path)          # ← raz na początku
+    data = segmenter.load_data(laz_path)
+    xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)
+    labels = segmenter.segment(data)
 
-        xyz_vis = xyz_orig.copy()
-        xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
-        xyz_vis[:, 2] -= xyz_vis[:, 2].min()
-        xyz_vis = xyz_vis.astype(np.float32)
+    xyz_vis = xyz_orig.copy()
+    xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+    xyz_vis[:, 2] -= xyz_vis[:, 2].min()
+    xyz_vis = xyz_vis.astype(np.float32)
 
         vis_mask = (
             (labels == segmenter.cfg["ground_label"]) |
