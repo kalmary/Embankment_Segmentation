@@ -325,7 +325,6 @@ class SegmentEmbankment:
         _, indices = ndi.distance_transform_edt(invalid_mask, return_distances=True, return_indices=True)
         z_filled = z_grid[tuple(indices)]
         z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
-        z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
 
         gy, gx = np.gradient(z_smoothed, self.cfg["grid_cell_size"])
         grad = np.sqrt(gx**2 + gy**2)
@@ -402,52 +401,7 @@ class SegmentEmbankment:
             data.labels[mask] = data_chunk.labels
 
         return data
-    def _absorb_class_into_embankment(self, full_points: np.ndarray, full_labels: np.ndarray) -> np.ndarray:
-        """
-        Punkty klasy cfg['absorb_class'] leżące wewnątrz 2D footprintu nasypu
-        (label 10) są reklasyfikowane jako nasyp.
-
-        Algorytm:
-        1. Buduje binarny raster z punktów nasypu.
-        2. Wypełnia dziury (binary_fill_holes) — zamknięte obszary bez nasypu
-            zostają wchłonięte.
-        3. Punkty absorb_class trafione przez wypełniony raster → label 10.
-        """
-        absorb_class = self.cfg.get("absorb_class", None)
-        if absorb_class is None:
-            return full_labels
-
-        absorb_mask = full_labels == absorb_class
-        emb_mask    = full_labels == 10
-
-        if not absorb_mask.any() or not emb_mask.any():
-            return full_labels
-
-        cell  = self.cfg["grid_cell_size"]
-        x, y  = full_points[:, 0], full_points[:, 1]
-        x_min, y_min = x.min(), y.min()
-        nx = int(np.ceil((x.max() - x_min) / cell)) + 1
-        ny = int(np.ceil((y.max() - y_min) / cell)) + 1
-
-        ix = np.clip(((x - x_min) / cell).astype(np.int32), 0, nx - 1)
-        iy = np.clip(((y - y_min) / cell).astype(np.int32), 0, ny - 1)
-
-        # footprint nasypu → wypełnij dziury
-        grid = np.zeros((ny, nx), dtype=bool)
-        grid[iy[emb_mask], ix[emb_mask]] = True
-        grid_filled = ndi.binary_fill_holes(grid)
-
-        # które punkty absorb_class wpadają w wypełniony obszar
-        absorb_indices = np.where(absorb_mask)[0]
-        inside = grid_filled[iy[absorb_mask], ix[absorb_mask]]
-        full_labels[absorb_indices[inside]] = 10
-
-        if self.verbose:
-            print(f"  _absorb_class_into_embankment: "
-                f"wchłonięto {inside.sum():,} pkt klasy {absorb_class} "
-                f"(z {absorb_mask.sum():,} łącznie).")
-
-        return full_labels
+    
     def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
                         chunk_size: int = 500_000,
                         class_weights: dict = {1: 3.}) -> PCD:
@@ -585,12 +539,11 @@ class SegmentEmbankment:
         )
         embankment_global = ground_rail_idx[embankment_local]
         full_labels[embankment_global] = 10
-        full_labels = self._absorb_class_into_embankment(data.points, full_labels)
 
         return full_labels
     
 def main():
-    path = pth.Path("/home/jakub-szota/Pobrane/Old_Test_Embankment")
+    laz_path = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/Grajewo_michal_mod.laz")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
     verbose = True
@@ -618,16 +571,8 @@ def main():
         (labels == segmenter.cfg["ground_label"]) |
         (labels == 10)
     )
-    # plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
-    filtered_las = original_las[vis_mask]
-    filtered_las.classification = labels[vis_mask].astype(np.uint8)
-    out_path = laz_path.parent / (laz_path.stem + "_segmented_embankment.laz")
-    filtered_las.write(out_path)
-    if verbose:
-        print(f"  Saved: {out_path.name}")
-
-
+    plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
 
 if __name__ == "__main__":
