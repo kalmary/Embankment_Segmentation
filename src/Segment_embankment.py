@@ -81,6 +81,14 @@ class SegmentEmbankment:
 
         return params
 
+    def _get_cfg(self, *keys):
+        defaults = {
+            "tile_size": 40.0,
+            "overlap": 10.0,
+            "min_points": 1024,
+        }
+        return {key: self.cfg.get(key, defaults[key]) for key in keys}
+
     def load_data(self, las_path: Union[str, pth.Path]) -> PCD:
         las_path = pth.Path(las_path)
         las = laspy.read(las_path)
@@ -385,7 +393,7 @@ class SegmentEmbankment:
     def _big_segm(self, data: PCD) -> PCD:
         data.processed = np.zeros(data.points.shape[0], dtype=bool)
 
-        for mask in self._iter_tiles(data.points, **self._get_cfg("tile_size", "overlap", "min_points")):
+        for mask in self._iter_tiles(data.points, tile_size=40, overlap=10, min_points=1024):
             data_chunk = data.copy()
             data_chunk.subsample(mask)
             data_chunk = self._base_segm(data_chunk)
@@ -460,6 +468,7 @@ class SegmentEmbankment:
         Returns labels for the full PCD: original labels preserved for all
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
+
         if data is None:
             data = PCD(points=points, labels=labels)
         if data.points.shape[0] == 0:
