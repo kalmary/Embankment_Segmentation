@@ -614,18 +614,18 @@ def main():
     xyz_vis[:, 2] -= xyz_vis[:, 2].min()
     xyz_vis = xyz_vis.astype(np.float32)
 
-        vis_mask = (
-            (labels == segmenter.cfg["ground_label"]) |
-            (labels == 10)
-        )
-        # plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+    vis_mask = (
+        (labels == segmenter.cfg["ground_label"]) |
+        (labels == 10)
+    )
+    # plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
-        filtered_las = original_las[vis_mask]
-        filtered_las.classification = labels[vis_mask].astype(np.uint8)
-        out_path = laz_path.parent / (laz_path.stem + "_segmented_embankment.laz")
-        filtered_las.write(out_path)
-        if verbose:
-            print(f"  Saved: {out_path.name}")
+    filtered_las = original_las[vis_mask]
+    filtered_las.classification = labels[vis_mask].astype(np.uint8)
+    out_path = laz_path.parent / (laz_path.stem + "_segmented_embankment.laz")
+    filtered_las.write(out_path)
+    if verbose:
+        print(f"  Saved: {out_path.name}")
 
 
 
