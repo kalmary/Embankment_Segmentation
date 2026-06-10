@@ -477,12 +477,11 @@ class SegmentEmbankment:
         full_labels = data.labels.copy()
 
 
-        # --- filter to ground + rail (mirrors load_data logic) ---
         ground_rail_mask = (
             (full_labels == self.cfg["ground_label"]) |
             (full_labels == self.cfg["rail_label"])
         )
-        ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
+        ground_rail_idx = np.where(ground_rail_mask)[0]  
         
 
         filtered = PCD(
@@ -491,19 +490,16 @@ class SegmentEmbankment:
         )
 
         if filtered.points.shape[0] == 0:
-            # if self.verbose:
-            #     print("Point cloud is empty after filtering.")
             return full_labels
 
-        # --- rail labelling & early-exit guards ---
-        filtered.labels = self._label_rail_points(filtered.points)
+
+        #filtered.labels = self._label_rail_points(filtered.points) #TODO
+        filtered.labels = self._label_rail_points_from_class(filtered.points, full_labels[ground_rail_mask])
 
         if np.unique(filtered.labels).shape[0] == 1:
-            # if self.verbose:
-            #     print("No rails found.")
             return full_labels
 
-        # --- centre coords ---
+
         filtered.points -= filtered.points.mean(axis=0)
         filtered.points = filtered.points.astype(np.float32)
 
@@ -529,10 +525,6 @@ class SegmentEmbankment:
 
         data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
 
-        # --- write embankment back into full-PCD labels ---
-        # _base_segm vis_labels: 0 = ground, 1 = rail seed or embankment.
-        # Only original ground points should become embankment; original rail
-        # points keep their rail class after being used as growth seeds.
         embankment_local = (
             (data_org.labels == 1) &
             (full_labels[ground_rail_idx] == self.cfg["ground_label"])
@@ -542,37 +534,84 @@ class SegmentEmbankment:
 
         return full_labels
     
+    def _label_rail_points_from_class(self, xyz, original_labels):
+        rail_mask = (original_labels == self.cfg["rail_label"])
+        if rail_mask.sum() == 0:
+            return np.zeros(xyz.shape[0], dtype=np.uint8)
+
+        x, y = xyz[:, 0], xyz[:, 1]
+        x_min, y_min = x.min(), y.min()
+        nx = int(np.ceil((x.max() - x_min) / self.cfg["grid_cell_size"])) + 1
+        ny = int(np.ceil((y.max() - y_min) / self.cfg["grid_cell_size"])) + 1
+
+        ix = np.clip(((x - x_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, nx - 1)
+        iy = np.clip(((y - y_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, ny - 1)
+
+        gm = np.zeros((ny, nx), dtype=bool)
+        gm[iy[rail_mask], ix[rail_mask]] = True
+
+        bx = max(1, int(np.ceil(self.cfg.get("rail_buffer_x_m", 2.0) / self.cfg["grid_cell_size"])))
+        by = max(1, int(np.ceil(self.cfg.get("rail_buffer_y_m", 1.0) / self.cfg["grid_cell_size"])))
+        struct = np.ones((2 * by + 1, 2 * bx + 1), dtype=bool)
+
+        dilated = ndi.binary_dilation(gm, structure=struct)
+
+        return dilated[iy, ix].astype(np.uint8)
 def main():
-    laz_path = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/Grajewo_michal_mod.laz")
+    path = pth.Path("/home/jakub-szota/Pobrane/testowe/")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
     verbose = True
 
-    segmenter = SegmentEmbankment.from_config(
-        cfg_path=embankment_config_path,
-        db_param_path=db_params_path,
-        verbose=verbose,
-    )
 
     
+    LOOSE_MAX_DIST_M          = 8.0    
+    LOOSE_CROWN_WIDTH_M       = 3.5    
+    LOOSE_MIN_SLOPE           = 0.08   
+    LOOSE_MAX_SLOPE           = 6.5    
+    LOOSE_MIN_GLOBAL_SLOPE    = 0.03  
+    LOOSE_MAX_EMBANKMENT_HEIGHT = 7.5  
+    LOOSE_MAX_ELEV_DIFF       = 0.40   
 
-    original_las = laspy.read(laz_path)          # ← raz na początku
-    data = segmenter.load_data(laz_path)
-    xyz_orig = data.points.copy()
+    with open(embankment_config_path, "r") as f:
+        cfg_strict = json.load(f)
+    
+    cfg_loose = {
+        **cfg_strict,
+        "max_dist_m":           LOOSE_MAX_DIST_M,
+        "crown_width_m":        LOOSE_CROWN_WIDTH_M,
+        "min_slope":            LOOSE_MIN_SLOPE,
+        "max_slope":            LOOSE_MAX_SLOPE,
+        "min_global_slope":     LOOSE_MIN_GLOBAL_SLOPE,
+        "max_embankment_height": LOOSE_MAX_EMBANKMENT_HEIGHT,
+        "max_elev_diff":        LOOSE_MAX_ELEV_DIFF,
+    }
 
-    labels = segmenter.segment(data)
+    segmenter_strict = SegmentEmbankment(cfg=cfg_strict, db_param_path=db_params_path, verbose=verbose)
+    segmenter_loose  = SegmentEmbankment(cfg=cfg_loose,  db_param_path=db_params_path, verbose=verbose)
 
-    xyz_vis = xyz_orig.copy()
-    xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
-    xyz_vis[:, 2] -= xyz_vis[:, 2].min()
-    xyz_vis = xyz_vis.astype(np.float32)
+    for i, laz_path in enumerate(path.glob("*.las")):
+        if verbose:
+            print(f"\n[{i+1}] {laz_path.name}")
 
-    vis_mask = (
-        (labels == segmenter.cfg["ground_label"]) |
-        (labels == 10)
-    )
+        data = segmenter_strict.load_data(laz_path)
+        xyz_orig = data.points.copy()
 
-    plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+        labels_strict = segmenter_strict.segment(data)
+        labels_loose  = segmenter_loose.segment(data)
+
+        diff = ((labels_loose == 10) & (labels_strict != 10)).sum()
+        print(f"  strict: {(labels_strict == 10).sum():,}  loose: {(labels_loose == 10).sum():,}  diff: {diff:,}")
+
+        final_labels = labels_strict.copy()
+        final_labels[(labels_loose == 10) & (labels_strict != 10)] = 11
+
+        xyz_vis = xyz_orig.copy()
+        xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
+        xyz_vis[:, 2]  -= xyz_vis[:, 2].min()
+        xyz_vis = xyz_vis.astype(np.float32)
+
+        plot_cloud(xyz_vis, final_labels)
 
 
 if __name__ == "__main__":
