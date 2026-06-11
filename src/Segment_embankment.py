@@ -493,8 +493,8 @@ class SegmentEmbankment:
             return full_labels
 
 
-        #filtered.labels = self._label_rail_points(filtered.points) #TODO
-        filtered.labels = self._label_rail_points_from_class(filtered.points, full_labels[ground_rail_mask])
+        filtered.labels = self._label_rail_points(filtered.points) #TODO
+        # filtered.labels = self._label_rail_points_from_class(filtered.points, full_labels[ground_rail_mask])
 
         if np.unique(filtered.labels).shape[0] == 1:
             return full_labels
@@ -557,8 +557,11 @@ class SegmentEmbankment:
         dilated = ndi.binary_dilation(gm, structure=struct)
 
         return dilated[iy, ix].astype(np.uint8)
+    
+
+
 def main():
-    path = pth.Path("/home/jakub-szota/Pobrane/testowe/")
+    path = pth.Path("/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mod.laz")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
     ditch_config_path = "src/ditch_config.json"
@@ -576,8 +579,13 @@ def main():
         segmenter_loose  = SegmentEmbankment(cfg=cfg_ditch,  db_param_path=db_params_path, verbose=verbose)
     elif verbose:
         print("No ditch config found, skipping loose segmentation.")
+    
+    if path.is_dir():
+        path_gen = enumerate(path.glob("*.las"))
+    else:
+        path_gen = enumerate([path])
 
-    for i, laz_path in enumerate(path.glob("*.las")):
+    for i, laz_path in path_gen:
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
@@ -604,5 +612,18 @@ def main():
         plot_cloud(xyz_vis, final_labels)
 
 
+
+
 if __name__ == "__main__":
     main()
+
+"""
+TODO
+1. teraz embankment dziala 2 razy - raz zwraca embankment, drugi raz nieco większy embankmen, który po zabawie maskami zamienia się w ditch. Powinno być:
+    1.1 SegmentEmbankment przyjmuje 2 configi naraz - drugi jest opcjonalny
+    1.2. Jeśli otrzymano tylko jeden config, program działa jak wcześniej
+    1.3. Jeśli otrzymano drugi config, segment najpierw znajduje embankment, później ditch, później rozdziela te maski i zwraca całe labels
+    Wszystko powinno dziać się w metodzie segment
+
+Unikamy metod indywidualnych dla tego jednego przypadku testowego - mozesz sobie zrobić testowy config, ale artefakty w samym kodzie są trudne do usunięcia/ łatwo o nich zapomnieć/ są niezrozumiałe kiedy korzysta więcej osób
+"""
