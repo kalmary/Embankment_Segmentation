@@ -561,34 +561,21 @@ def main():
     path = pth.Path("/home/jakub-szota/Pobrane/testowe/")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
+    ditch_config_path = "src/ditch_config.json"
     verbose = True
-
-
-    
-    LOOSE_MAX_DIST_M          = 8.0    
-    LOOSE_CROWN_WIDTH_M       = 3.5    
-    LOOSE_MIN_SLOPE           = 0.08   
-    LOOSE_MAX_SLOPE           = 6.5    
-    LOOSE_MIN_GLOBAL_SLOPE    = 0.03  
-    LOOSE_MAX_EMBANKMENT_HEIGHT = 7.5  
-    LOOSE_MAX_ELEV_DIFF       = 0.40   
-
+   
     with open(embankment_config_path, "r") as f:
         cfg_strict = json.load(f)
-    
-    cfg_loose = {
-        **cfg_strict,
-        "max_dist_m":           LOOSE_MAX_DIST_M,
-        "crown_width_m":        LOOSE_CROWN_WIDTH_M,
-        "min_slope":            LOOSE_MIN_SLOPE,
-        "max_slope":            LOOSE_MAX_SLOPE,
-        "min_global_slope":     LOOSE_MIN_GLOBAL_SLOPE,
-        "max_embankment_height": LOOSE_MAX_EMBANKMENT_HEIGHT,
-        "max_elev_diff":        LOOSE_MAX_ELEV_DIFF,
-    }
 
     segmenter_strict = SegmentEmbankment(cfg=cfg_strict, db_param_path=db_params_path, verbose=verbose)
-    segmenter_loose  = SegmentEmbankment(cfg=cfg_loose,  db_param_path=db_params_path, verbose=verbose)
+
+    segmenter_loose = None
+    if pth.Path(ditch_config_path).exists():
+        with open(ditch_config_path, "r") as f:
+            cfg_ditch = json.load(f)    
+        segmenter_loose  = SegmentEmbankment(cfg=cfg_ditch,  db_param_path=db_params_path, verbose=verbose)
+    elif verbose:
+        print("No ditch config found, skipping loose segmentation.")
 
     for i, laz_path in enumerate(path.glob("*.las")):
         if verbose:
@@ -598,13 +585,16 @@ def main():
         xyz_orig = data.points.copy()
 
         labels_strict = segmenter_strict.segment(data)
-        labels_loose  = segmenter_loose.segment(data)
-
-        diff = ((labels_loose == 10) & (labels_strict != 10)).sum()
-        print(f"  strict: {(labels_strict == 10).sum():,}  loose: {(labels_loose == 10).sum():,}  diff: {diff:,}")
-
         final_labels = labels_strict.copy()
-        final_labels[(labels_loose == 10) & (labels_strict != 10)] = 11
+        
+        if segmenter_loose is not None:
+            labels_loose  = segmenter_loose.segment(data)
+
+            diff = ((labels_loose == 10) & (labels_strict != 10)).sum()
+            if verbose:
+                print(f"  strict: {(labels_strict == 10).sum():,}  loose: {(labels_loose == 10).sum():,}  diff: {diff:,}")
+
+            final_labels[(labels_loose == 10) & (labels_strict != 10)] = 11
 
         xyz_vis = xyz_orig.copy()
         xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
