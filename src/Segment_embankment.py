@@ -60,13 +60,11 @@ class SegmentEmbankment:
 
     def __init__(self,
                 cfg: dict,
-                db_param_path: Union[str, pth.Path],
-                ditch_cfg: dict = None, 
+                db_param_path: Union[str, pth.Path], 
                 verbose: bool = False):
     
         self.cfg = cfg
         self.__db_param = self._load_db_params(db_param_path)
-        self.ditch_cfg = ditch_cfg
         self.verbose = verbose
 
     def _load_db_params(self, path: Union[str, pth.Path]):
@@ -121,7 +119,6 @@ class SegmentEmbankment:
     def __load_tracks_from_db(self, bbox):
         conn = psycopg2.connect(**self.__db_param)
         xmin, ymin, xmax, ymax = bbox
-
         query = """
             SELECT ST_AsText(wspolrzedne_utm)
             FROM data.tory
@@ -143,7 +140,7 @@ class SegmentEmbankment:
                 lines.extend(list(geom.geoms))
         return lines
     
-    
+
     def _label_rail_points(self, xyz, rail_radius: float=0.5):
         if xyz.shape[0] == 0:
             return np.zeros(0, dtype=np.uint8)
@@ -163,6 +160,7 @@ class SegmentEmbankment:
         tree = cKDTree(rail_xy)
         dist, _ = tree.query(xyz[:, :2])
         labels = (dist <= rail_radius).astype(np.uint8)
+
         return labels
     
 
@@ -194,6 +192,9 @@ class SegmentEmbankment:
         """
         if xyz.shape[0] == 0 or mask.sum() == 0:
             return np.zeros(xyz.shape[0], dtype=bool)
+
+        # if self.verbose:
+        #     print(f"    Refining mask (closing radius: {self.cfg["closing_radius"]})...")
         
         x, y = xyz[:, 0], xyz[:, 1]
         x_min, y_min = x.min(), y.min()
@@ -212,7 +213,7 @@ class SegmentEmbankment:
         refined_gm = ndi.binary_closing(gm, structure=struct)
 
         refined_gm = ndi.binary_fill_holes(refined_gm)
-        erosion_radius = self.cfg["erosion_radius"]
+        erosion_radius = self.cfg.get("erosion_radius", 2)
         y_idx, x_idx = np.ogrid[-erosion_radius:erosion_radius+1, -erosion_radius:erosion_radius+1]
         erosion_struct = x_idx**2 + y_idx**2 <= erosion_radius**2
 
@@ -226,6 +227,9 @@ class SegmentEmbankment:
         refined_gm[remove_pixel] = False
 
         refined_mask_pts = refined_gm[iy, ix]
+        # if self.verbose:
+        #     added = refined_mask_pts.sum() - mask.sum()
+        #     print(f"      Refinement complete. Change: {added:,} points.")
         
         return refined_mask_pts
     
@@ -456,126 +460,170 @@ class SegmentEmbankment:
         data.labels[unprocessed_mask] = out_labels
         return data
 
-    def _segment_base(self, data: PCD, cfg: dict) -> np.ndarray:
-        _orig_cfg = self.cfg
-        self.cfg = cfg
-        try:
-            full_labels = data.labels.copy()
 
-            ground_rail_mask = (
-                (full_labels == self.cfg["ground_label"]) |
-                (full_labels == self.cfg["rail_label"])
-            )
-            ground_rail_idx = np.where(ground_rail_mask)[0]
-
-            filtered = PCD(
-                points=data.points[ground_rail_mask].copy(),
-                labels=np.zeros(ground_rail_mask.sum(), dtype=np.uint8),
-            )
-
-            if filtered.points.shape[0] == 0:
-                return full_labels
-
-            filtered.labels = self._label_rail_points(filtered.points)
-
-            if np.unique(filtered.labels).shape[0] == 1:
-                return full_labels
-
-            filtered.points -= filtered.points.mean(axis=0)
-            filtered.points = filtered.points.astype(np.float32)
-
-            data_org = filtered.copy()
-            data_org.labels = np.zeros(filtered.points.shape[0], dtype=np.uint8)
-            data_org.processed = np.zeros(filtered.points.shape[0], dtype=bool)
-
-            n = filtered.points.shape[0]
-            surviving = np.arange(n)
-
-            vox_mask = voxel_subsample_vectorized(filtered.points, voxel_size=0.1)
-            surviving = surviving[vox_mask]
-            filtered.subsample(vox_mask)
-            data_org.update_mask(surviving)
-
-            if filtered.points.shape[0] < 5 * 10e6:
-                filtered = self._base_segm(filtered)
-                data_org.labels[surviving] = filtered.labels
-            else:
-                filtered = self._big_segm(filtered)
-                tiled_surviving = surviving[filtered.processed]
-                data_org.labels[tiled_surviving] = filtered.labels[filtered.processed]
-
-            data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
-
-            embankment_local = (
-                (data_org.labels == 1) &
-                (full_labels[ground_rail_idx] == self.cfg["ground_label"])
-            )
-            embankment_global = ground_rail_idx[embankment_local]
-            full_labels[embankment_global] = 10
-
-            return full_labels
-
-        finally:
-            self.cfg = _orig_cfg
     
     def segment(self, data: Optional[PCD] = None, points: Optional[np.ndarray] = None, labels: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Accepts a full PCD (all classes). Filters to ground + rail internally.
+        Returns labels for the full PCD: original labels preserved for all
+        non-ground/rail points; ground points reclassified as embankment get label 10.
+        """
+
         if data is None:
             data = PCD(points=points, labels=labels)
         if data.points.shape[0] == 0:
             return data.labels.copy()
-
-        labels_strict = self._segment_base(data, self.cfg)
-
-        if self.ditch_cfg is None:
-            return labels_strict
-
-        labels_loose = self._segment_base(data, self.ditch_cfg)
-
-        final_labels = labels_strict.copy()
-        final_labels[(labels_loose == 10) & (labels_strict != 10)] = 11
-
-        return final_labels
     
+        full_labels = data.labels.copy()
+
+
+        ground_rail_mask = (
+            (full_labels == self.cfg["ground_label"]) |
+            (full_labels == self.cfg["rail_label"])
+        )
+        ground_rail_idx = np.where(ground_rail_mask)[0]  
+        
+
+        filtered = PCD(
+            points=data.points[ground_rail_mask].copy(),
+            labels=np.zeros(ground_rail_mask.sum(), dtype=np.uint8),
+        )
+
+        if filtered.points.shape[0] == 0:
+            return full_labels
+
+
+        filtered.labels = self._label_rail_points(filtered.points) #TODO
+        # filtered.labels = self._label_rail_points_from_class(filtered.points, full_labels[ground_rail_mask])
+
+        if np.unique(filtered.labels).shape[0] == 1:
+            return full_labels
+
+
+        filtered.points -= filtered.points.mean(axis=0)
+        filtered.points = filtered.points.astype(np.float32)
+
+        data_org = filtered.copy()
+        data_org.labels = np.zeros(filtered.points.shape[0], dtype=np.uint8)
+        data_org.processed = np.zeros(filtered.points.shape[0], dtype=bool)
+
+        n = filtered.points.shape[0]
+        surviving = np.arange(n)
+
+        vox_mask = voxel_subsample_vectorized(filtered.points, voxel_size=0.1)
+        surviving = surviving[vox_mask]
+        filtered.subsample(vox_mask)
+        data_org.update_mask(surviving)
+
+        if filtered.points.shape[0] < 5 * 10e6:
+            filtered = self._base_segm(filtered)
+            data_org.labels[surviving] = filtered.labels
+        else:
+            filtered = self._big_segm(filtered)
+            tiled_surviving = surviving[filtered.processed]
+            data_org.labels[tiled_surviving] = filtered.labels[filtered.processed]
+
+        data_org = self._upsample_labels(data_org, k=25, sigma=0.3)
+
+        embankment_local = (
+            (data_org.labels == 1) &
+            (full_labels[ground_rail_idx] == self.cfg["ground_label"])
+        )
+        embankment_global = ground_rail_idx[embankment_local]
+        full_labels[embankment_global] = 10
+
+        return full_labels
+    
+    def _label_rail_points_from_class(self, xyz, original_labels):
+        rail_mask = (original_labels == self.cfg["rail_label"])
+        if rail_mask.sum() == 0:
+            return np.zeros(xyz.shape[0], dtype=np.uint8)
+
+        x, y = xyz[:, 0], xyz[:, 1]
+        x_min, y_min = x.min(), y.min()
+        nx = int(np.ceil((x.max() - x_min) / self.cfg["grid_cell_size"])) + 1
+        ny = int(np.ceil((y.max() - y_min) / self.cfg["grid_cell_size"])) + 1
+
+        ix = np.clip(((x - x_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, nx - 1)
+        iy = np.clip(((y - y_min) / self.cfg["grid_cell_size"]).astype(np.int32), 0, ny - 1)
+
+        gm = np.zeros((ny, nx), dtype=bool)
+        gm[iy[rail_mask], ix[rail_mask]] = True
+
+        bx = max(1, int(np.ceil(self.cfg.get("rail_buffer_x_m", 2.0) / self.cfg["grid_cell_size"])))
+        by = max(1, int(np.ceil(self.cfg.get("rail_buffer_y_m", 1.0) / self.cfg["grid_cell_size"])))
+        struct = np.ones((2 * by + 1, 2 * bx + 1), dtype=bool)
+
+        dilated = ndi.binary_dilation(gm, structure=struct)
+
+        return dilated[iy, ix].astype(np.uint8)
+    
+
+
 def main():
-    path = pth.Path("/home/jakub-szota/Pobrane/test_nowy")
+    path = pth.Path("/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mod.laz")
     db_params_path = "src/db_params.txt"
     embankment_config_path = "src/embankment_config.json"
-    ditch_config_path = pth.Path("src/ditch_config.json")
+    ditch_config_path = "src/ditch_config.json"
     verbose = True
-
+   
     with open(embankment_config_path, "r") as f:
-        cfg = json.load(f)
+        cfg_strict = json.load(f)
 
-    ditch_cfg = None
-    if ditch_config_path.exists():
+    segmenter_strict = SegmentEmbankment(cfg=cfg_strict, db_param_path=db_params_path, verbose=verbose)
+
+    segmenter_loose = None
+    if pth.Path(ditch_config_path).exists():
         with open(ditch_config_path, "r") as f:
-            ditch_cfg = json.load(f)
+            cfg_ditch = json.load(f)    
+        segmenter_loose  = SegmentEmbankment(cfg=cfg_ditch,  db_param_path=db_params_path, verbose=verbose)
     elif verbose:
-        print("Brak ditch_config.json — pomijam segmentację rowów")
+        print("No ditch config found, skipping loose segmentation.")
+    
+    if path.is_dir():
+        path_gen = enumerate(path.glob("*.las"))
+    else:
+        path_gen = enumerate([path])
 
-    segmenter = SegmentEmbankment(
-        cfg=cfg,
-        db_param_path=db_params_path,
-        ditch_cfg=ditch_cfg,
-        verbose=verbose,
-    )
-
-    for i, laz_path in enumerate(path.glob("*.laz")):
+    for i, laz_path in path_gen:
         if verbose:
             print(f"\n[{i+1}] {laz_path.name}")
 
-        data = segmenter.load_data(laz_path)
+        data = segmenter_strict.load_data(laz_path)
         xyz_orig = data.points.copy()
 
-        labels = segmenter.segment(data)
+        labels_strict = segmenter_strict.segment(data)
+        final_labels = labels_strict.copy()
+        
+        if segmenter_loose is not None:
+            labels_loose  = segmenter_loose.segment(data)
+
+            diff = ((labels_loose == 10) & (labels_strict != 10)).sum()
+            if verbose:
+                print(f"  strict: {(labels_strict == 10).sum():,}  loose: {(labels_loose == 10).sum():,}  diff: {diff:,}")
+
+            final_labels[(labels_loose == 10) & (labels_strict != 10)] = 11
 
         xyz_vis = xyz_orig.copy()
         xyz_vis[:, :2] -= xyz_vis[:, :2].mean(axis=0)
         xyz_vis[:, 2]  -= xyz_vis[:, 2].min()
         xyz_vis = xyz_vis.astype(np.float32)
 
-        plot_cloud(xyz_vis, labels)
+        plot_cloud(xyz_vis, final_labels)
+
+
 
 
 if __name__ == "__main__":
     main()
+
+"""
+TODO
+1. teraz embankment dziala 2 razy - raz zwraca embankment, drugi raz nieco większy embankmen, który po zabawie maskami zamienia się w ditch. Powinno być:
+    1.1 SegmentEmbankment przyjmuje 2 configi naraz - drugi jest opcjonalny
+    1.2. Jeśli otrzymano tylko jeden config, program działa jak wcześniej
+    1.3. Jeśli otrzymano drugi config, segment najpierw znajduje embankment, później ditch, później rozdziela te maski i zwraca całe labels
+    Wszystko powinno dziać się w metodzie segment
+
+Unikamy metod indywidualnych dla tego jednego przypadku testowego - mozesz sobie zrobić testowy config, ale artefakty w samym kodzie są trudne do usunięcia/ łatwo o nich zapomnieć/ są niezrozumiałe kiedy korzysta więcej osób
+"""
