@@ -17,5 +17,6 @@
     "absorb_class": 0,
     "rail_label": 12,
     "rail_buffer_x_m": 2.0,
-    "rail_buffer_y_m": 1.0
+    "rail_buffer_y_m": 1.0,
+    "erosion_radius": 2.0
 }
