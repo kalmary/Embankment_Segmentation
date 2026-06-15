@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 
-from utils.plot_sections import *
+# from utils.plot_sections import *
 
 
 class GroundSegmenter:
@@ -1126,7 +1126,7 @@ class GroundSegmenter:
         return full_labels
 
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        full_labels = labels.copy()
+        full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
         ground_mask = full_labels == self.ground_label
         ground_idx = np.flatnonzero(ground_mask)
@@ -1273,16 +1273,6 @@ class GroundSegmenter:
                     ditch_immediate_points=self.graph_ditch_immediate_points,
                     ditch_max_flat_points=self.graph_ditch_max_flat_points,
                 )
-
-            plot_xz_side_sections(
-                xz=xz,
-                left_emb=left_emb,
-                left_ditch=left_ditch,
-                left_rest=left_rest,
-                right_emb=right_emb,
-                right_ditch=right_ditch,
-                right_rest=right_rest,
-            )
 
             labels_sectioned = labels_nearest.copy()
 
