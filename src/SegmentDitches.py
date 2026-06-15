@@ -156,7 +156,7 @@ def plot_xz_side_sections(
     plt.show()
 
 
-class CurvedCutter:
+class DitchSegmenter:
     def __init__(
         self,
         cfg: dict,
@@ -555,17 +555,17 @@ class CurvedCutter:
         x_bin: float,
         max_gap_bins: float = 3.0,
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        graph = CurvedCutter.get_graph(
+        graph = DitchSegmenter.get_graph(
             xz=xz,
             x_bin=x_bin,
         )
 
-        graph_parts = CurvedCutter._split_graph_by_x_gap(
+        graph_parts = DitchSegmenter._split_graph_by_x_gap(
             graph=graph,
             max_gap=x_bin * max_gap_bins,
         )
 
-        left_graph, right_graph = CurvedCutter._pick_two_side_components(
+        left_graph, right_graph = DitchSegmenter._pick_two_side_components(
             graph_parts=graph_parts,
         )
 
@@ -687,7 +687,7 @@ class CurvedCutter:
         right_1, right_2 = None, None
 
         if left_graph is not None and len(left_graph):
-            left_1, left_2 = CurvedCutter.split_graph_by_gradient(
+            left_1, left_2 = DitchSegmenter.split_graph_by_gradient(
                 graph=left_graph,
                 side="left",
                 uphill_slope=uphill_slope,
@@ -697,7 +697,7 @@ class CurvedCutter:
             )
 
         if right_graph is not None and len(right_graph):
-            right_1, right_2 = CurvedCutter.split_graph_by_gradient(
+            right_1, right_2 = DitchSegmenter.split_graph_by_gradient(
                 graph=right_graph,
                 side="right",
                 uphill_slope=uphill_slope,
@@ -958,7 +958,7 @@ if __name__ == "__main__":
     cfg_path = pth.Path(__file__).parent / "ditches_config.json"
     db_param_path = pth.Path(__file__).parent / "db_params.txt"
 
-    cutter = CurvedCutter.from_config(
+    cutter = DitchSegmenter.from_config(
         cfg_path=cfg_path,
         db_param_path=db_param_path,
         verbose=False,

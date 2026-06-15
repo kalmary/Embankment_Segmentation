@@ -14,7 +14,7 @@ from shapely.geometry import LineString, MultiLineString
 from utils.plot_sections import *
 
 
-class CurvedCutter:
+class GroundSegmenter:
     def __init__(
         self,
         cfg: dict,
@@ -526,7 +526,7 @@ class CurvedCutter:
         # Then ditch starts directly after embankment and is represented
         # by the stable uphill wall.
         immediate_stop = min(n, emb_end + immediate_points + min_uphill_points)
-        immediate = CurvedCutter._first_run(
+        immediate = GroundSegmenter._first_run(
             mask=uphill_mask,
             start=emb_end,
             stop=immediate_stop,
@@ -539,7 +539,7 @@ class CurvedCutter:
             # Include a short flat/noisy transition before uphill as ditch bottom,
             # but keep ditch attached to embankment.
             if uphill_start - emb_end <= immediate_points:
-                return emb_end, CurvedCutter._end_run(uphill_mask, uphill_end)
+                return emb_end, GroundSegmenter._end_run(uphill_mask, uphill_end)
 
         # Case 2: a ditch appears later. In this version, if a later ditch is
         # found, embankment will be extended up to the ditch start by the caller.
@@ -550,13 +550,13 @@ class CurvedCutter:
         i = emb_end
 
         while i < n:
-            uphill = CurvedCutter._first_run(
+            uphill = GroundSegmenter._first_run(
                 mask=uphill_mask,
                 start=i,
                 stop=n,
                 min_points=min_uphill_points,
             )
-            downhill = CurvedCutter._first_run(
+            downhill = GroundSegmenter._first_run(
                 mask=downhill_mask,
                 start=i,
                 stop=n,
@@ -573,7 +573,7 @@ class CurvedCutter:
                 uphill_start, uphill_end = uphill
                 uphill_candidate = (
                     uphill_start,
-                    CurvedCutter._end_run(uphill_mask, uphill_end),
+                    GroundSegmenter._end_run(uphill_mask, uphill_end),
                 )
 
             # Downhill -> optional flat/noisy bottom -> uphill candidate.
@@ -586,7 +586,7 @@ class CurvedCutter:
                     j += 1
 
                 flat_stop = min(n, j + max_flat_points + min_uphill_points)
-                uphill_after = CurvedCutter._first_run(
+                uphill_after = GroundSegmenter._first_run(
                     mask=uphill_mask,
                     start=j,
                     stop=flat_stop,
@@ -597,7 +597,7 @@ class CurvedCutter:
                     _, uphill_end = uphill_after
                     downhill_candidate = (
                         downhill_start,
-                        CurvedCutter._end_run(uphill_mask, uphill_end),
+                        GroundSegmenter._end_run(uphill_mask, uphill_end),
                     )
 
             candidates = [
@@ -730,7 +730,7 @@ class CurvedCutter:
         uphill_mask = dz_dx > uphill_slope
         downhill_mask = dz_dx < -uphill_slope
 
-        ditch_interval = CurvedCutter._find_ditch_interval(
+        ditch_interval = GroundSegmenter._find_ditch_interval(
             emb_end=emb_end,
             uphill_mask=uphill_mask,
             downhill_mask=downhill_mask,
@@ -1168,7 +1168,7 @@ if __name__ == "__main__":
     cfg_path = pth.Path(__file__).parent / "ground_segm_config.json"
     db_param_path = pth.Path(__file__).parent / "db_params.txt"
 
-    cutter = CurvedCutter.from_config(
+    cutter = GroundSegmenter.from_config(
         cfg_path=cfg_path,
         db_param_path=db_param_path,
         verbose=False,
