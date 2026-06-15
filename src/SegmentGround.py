@@ -65,6 +65,7 @@ class GroundSegmenter:
         self.graph_ditch_max_flat_points = int(
             cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
         )
+        self.smoothing = bool(cfg.get("smoothing", True))
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)
@@ -976,6 +977,154 @@ class GroundSegmenter:
 
         return labels_sectioned
 
+    @staticmethod
+    def _centerline_coordinates(
+        xy: np.ndarray,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        tree = cKDTree(centerline)
+        _, nearest = tree.query(xy)
+
+        previous = np.maximum(nearest - 1, 0)
+        following = np.minimum(nearest + 1, len(centerline) - 1)
+        tangent = centerline[following] - centerline[previous]
+        tangent_norm = np.linalg.norm(tangent, axis=1)
+        valid = tangent_norm > 0
+        tangent[valid] /= tangent_norm[valid, None]
+        tangent[~valid] = np.array([1.0, 0.0])
+
+        right = np.column_stack((tangent[:, 1], -tangent[:, 0]))
+        offset = np.sum((xy - centerline[nearest]) * right, axis=1)
+
+        return center_s[nearest], offset
+
+    def _fit_label_border(
+        self,
+        station: np.ndarray,
+        offset: np.ndarray,
+        label_mask: np.ndarray,
+        side: int,
+    ):
+        mask = label_mask & (offset * side > 0)
+
+        if np.count_nonzero(mask) < 4:
+            return None
+
+        station_side = station[mask]
+        offset_side = offset[mask]
+        bin_size = max(self.length_min, self.curve_resolution)
+        bins = np.floor((station_side - station_side.min()) / bin_size).astype(np.int64)
+
+        border_station = []
+        border_offset = []
+        percentile = 90.0 if side > 0 else 10.0
+
+        for bin_id in np.unique(bins):
+            bin_mask = bins == bin_id
+
+            if np.count_nonzero(bin_mask) < 2:
+                continue
+
+            border_station.append(np.median(station_side[bin_mask]))
+            border_offset.append(np.percentile(offset_side[bin_mask], percentile))
+
+        border_station = np.asarray(border_station, dtype=np.float64)
+        border_offset = np.asarray(border_offset, dtype=np.float64)
+
+        if border_station.size < 2:
+            return None
+
+        order = np.argsort(border_station)
+        border_station = border_station[order]
+        border_offset = border_offset[order]
+        keep = np.r_[True, np.diff(border_station) > 1e-9]
+        border_station = border_station[keep]
+        border_offset = border_offset[keep]
+
+        if border_station.size < 2:
+            return None
+
+        degree = min(3, border_station.size - 1)
+        smoothing = border_station.size * self.graph_x_bin**2
+
+        return UnivariateSpline(
+            border_station,
+            border_offset,
+            k=degree,
+            s=smoothing,
+            ext=3,
+        )
+
+    def _smooth_labels(
+        self,
+        ground_xy: np.ndarray,
+        original_labels: np.ndarray,
+        full_labels: np.ndarray,
+        ground_idx: np.ndarray,
+        rail_mask: np.ndarray,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
+    ) -> np.ndarray:
+        if not self.smoothing:
+            return full_labels
+
+        ground_labels = full_labels[ground_idx].copy()
+        station, offset = self._centerline_coordinates(
+            xy=ground_xy,
+            centerline=centerline,
+            center_s=center_s,
+        )
+
+        embankment_mask = ground_labels == self.embankment_label
+        ditch_mask = ground_labels == self.ditch_label
+
+        left_embankment = self._fit_label_border(
+            station, offset, embankment_mask, side=-1
+        )
+        right_embankment = self._fit_label_border(
+            station, offset, embankment_mask, side=1
+        )
+        left_ditch = self._fit_label_border(station, offset, ditch_mask, side=-1)
+        right_ditch = self._fit_label_border(station, offset, ditch_mask, side=1)
+
+        if left_embankment is not None and right_embankment is not None:
+            left_border = left_embankment(station)
+            right_border = right_embankment(station)
+            inside_embankment = (offset >= left_border) & (offset <= right_border)
+            ground_labels[inside_embankment] = self.embankment_label
+
+        for side, embankment_border, ditch_border in (
+            (-1, left_embankment, left_ditch),
+            (1, right_embankment, right_ditch),
+        ):
+            if embankment_border is None or ditch_border is None:
+                continue
+
+            embankment_offset = embankment_border(station)
+            ditch_offset = ditch_border(station)
+            side_mask = offset * side > 0
+            between_borders = (
+                side_mask
+                & (offset * side > embankment_offset * side)
+                & (offset * side <= ditch_offset * side)
+            )
+            replace_with_ground = between_borders & (ground_labels != self.ditch_label)
+            ground_labels[replace_with_ground] = self.ground_label
+
+            outside_ditch = side_mask & (offset * side > ditch_offset * side)
+            ground_labels[outside_ditch & (ground_labels == self.ditch_label)] = (
+                self.ground_label
+            )
+
+        ground_labels[rail_mask] = self.embankment_label
+        full_labels[ground_idx] = ground_labels
+        full_labels[original_labels != self.ground_label] = original_labels[
+            original_labels != self.ground_label
+        ]
+
+        return full_labels
+
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = labels.copy()
 
@@ -1152,7 +1301,15 @@ class GroundSegmenter:
             labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
-        return full_labels
+        return self._smooth_labels(
+            ground_xy=xy,
+            original_labels=labels,
+            full_labels=full_labels,
+            ground_idx=ground_idx,
+            rail_mask=rail_mask,
+            centerline=centerline,
+            center_s=center_s,
+        )
 
 if __name__ == "__main__":
     import laspy
