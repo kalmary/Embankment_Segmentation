@@ -840,6 +840,7 @@ class DitchSegmenter:
             s = s1
 
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        labels = np.asarray(labels, dtype=np.uint8)
         labels_out = labels.copy()
 
         points[:, :2] = points[:, :2] - np.mean(points[:, :2], axis=0)

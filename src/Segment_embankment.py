@@ -99,7 +99,7 @@ class SegmentEmbankment:
             np.asarray(las.z, dtype=np.float64),
         ], axis=1)
     
-        labels    = np.array(las.classification, dtype=np.int32)
+        labels = np.asarray(las.classification, dtype=np.uint8)
         del las
 
         data = PCD(xyz, labels)
@@ -471,10 +471,11 @@ class SegmentEmbankment:
 
         if data is None:
             data = PCD(points=points, labels=labels)
+
+        full_labels = np.asarray(data.labels, dtype=np.uint8).copy()
+
         if data.points.shape[0] == 0:
-            return data.labels.copy()
-    
-        full_labels = data.labels.copy()
+            return full_labels
 
 
         # --- filter to ground + rail (mirrors load_data logic) ---
