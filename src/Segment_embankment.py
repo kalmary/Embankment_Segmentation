@@ -4,8 +4,8 @@ try:
 except ImportError:
 
     try:
-        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud
-        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized
+        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud # type: ignore
+        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized # type: ignore
     except ImportError:
         from utils.plot_cloud import plot_cloud
         from utils.pcd_tools import voxel_subsample_vectorized

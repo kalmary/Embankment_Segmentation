@@ -1,365 +1,107 @@
 from __future__ import annotations
 
+import json
 import pathlib as pth
 from typing import Union
 
 import numpy as np
 import psycopg2
-
-from scipy.spatial import cKDTree
 from scipy.interpolate import UnivariateSpline
-
+from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 
-
-def plot_xz_graph(xz: np.ndarray, graph: np.ndarray, point_size: float = 1.0):
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    ax.scatter(
-        xz[:, 0],
-        xz[:, 1],
-        s=point_size,
-        alpha=0.25,
-        label="XZ points",
-    )
-
-    ax.plot(
-        graph[:, 0],
-        graph[:, 1],
-        linewidth=2,
-        marker=".",
-        color="red",
-        label="mean Z graph",
-    )
-
-    ax.axvline(0.0, linewidth=1)
-    ax.set_xlabel("X")
-    ax.set_ylabel("Z")
-    ax.set_title("XZ section and graph")
-    ax.axis("equal")
-    ax.grid(True)
-    ax.legend()
-
-    plt.show()
-
-
-def plot_xz_side_graphs(
-    xz: np.ndarray,
-    left_graph: np.ndarray | None,
-    right_graph: np.ndarray | None,
-    rail_x_min: float | None = None,
-    rail_x_max: float | None = None,
-    point_size: float = 1.0,
-):
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    ax.scatter(
-        xz[:, 0],
-        xz[:, 1],
-        s=point_size,
-        alpha=0.25,
-        label="XZ points",
-    )
-
-    if left_graph is not None and len(left_graph):
-        ax.plot(
-            left_graph[:, 0],
-            left_graph[:, 1],
-            linewidth=2,
-            marker=".",
-            label="left mean Z",
-        )
-
-    if right_graph is not None and len(right_graph):
-        ax.plot(
-            right_graph[:, 0],
-            right_graph[:, 1],
-            linewidth=2,
-            marker=".",
-            label="right mean Z",
-        )
-
-    ax.axvline(0.0, linewidth=1)
-
-    if rail_x_min is not None:
-        ax.axvline(rail_x_min, linewidth=1, linestyle="--", label="rail x min")
-
-    if rail_x_max is not None:
-        ax.axvline(rail_x_max, linewidth=1, linestyle="--", label="rail x max")
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Z")
-    ax.set_title("XZ section split by artificial DB railway mask")
-    ax.axis("equal")
-    ax.grid(True)
-    ax.legend()
-
-    plt.show()
-
-
-def plot_xz_side_sections(
-    xz: np.ndarray,
-    left_1: np.ndarray | None,
-    left_2: np.ndarray | None,
-    left_3: np.ndarray | None,
-    right_1: np.ndarray | None,
-    right_2: np.ndarray | None,
-    right_3: np.ndarray | None,
-    rail_x_min: float | None = None,
-    rail_x_max: float | None = None,
-    point_size: float = 1.0,
-):
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    ax.scatter(
-        xz[:, 0],
-        xz[:, 1],
-        s=point_size,
-        alpha=0.20,
-        label="XZ points",
-    )
-
-    if left_1 is not None and len(left_1):
-        ax.plot(
-            left_1[:, 0],
-            left_1[:, 1],
-            linewidth=3,
-            marker=".",
-            label="left section 1 embankment",
-        )
-
-    if left_2 is not None and len(left_2):
-        ax.plot(
-            left_2[:, 0],
-            left_2[:, 1],
-            linewidth=3,
-            marker=".",
-            label="left section 2 ditch",
-        )
-
-    if left_3 is not None and len(left_3):
-        ax.plot(
-            left_3[:, 0],
-            left_3[:, 1],
-            linewidth=3,
-            marker=".",
-            label="left section 3 ground",
-        )
-
-    if right_1 is not None and len(right_1):
-        ax.plot(
-            right_1[:, 0],
-            right_1[:, 1],
-            linewidth=3,
-            marker=".",
-            label="right section 1 embankment",
-        )
-
-    if right_2 is not None and len(right_2):
-        ax.plot(
-            right_2[:, 0],
-            right_2[:, 1],
-            linewidth=3,
-            marker=".",
-            label="right section 2 ditch",
-        )
-
-    if right_3 is not None and len(right_3):
-        ax.plot(
-            right_3[:, 0],
-            right_3[:, 1],
-            linewidth=3,
-            marker=".",
-            label="right section 3 ground",
-        )
-
-    ax.axvline(0.0, linewidth=1)
-
-    if rail_x_min is not None:
-        ax.axvline(rail_x_min, linewidth=1, linestyle="--", label="rail x min")
-
-    if rail_x_max is not None:
-        ax.axvline(rail_x_max, linewidth=1, linestyle="--", label="rail x max")
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Z")
-    ax.set_title("XZ side graphs split into embankment / ditch / ground")
-    ax.axis("equal")
-    ax.grid(True)
-    ax.legend()
-
-    plt.show()
+from utils.plot_sections import *
 
 
 class CurvedCutter:
     def __init__(
         self,
-        db_param_path: Union[str, pth.Path] | None = None,
-        distance_limit: float = 10.0,
-        ground_label: int = 1,
-        rail_label: int = 0,
-        embankment_label: int = 10,
-        ditch_label: int = 20,
-        length_min: float = 1.0,
-        length_max: float = 30.0,
-        width_margin: float = 0.0,
-        max_curve_ratio: float = 1.08,
-        curve_resolution: float = 1.0,
-        graph_x_bin: float = 0.25,
-        graph_uphill_slope: float = 0.10,
-        graph_downhill_slope: float = 0.10,
-        graph_flat_slope: float = 0.05,
-        graph_min_uphill_points: int = 3,
-        graph_min_downhill_points: int = 3,
-        graph_min_flat_points: int = 3,
-        graph_noise_points: int = 2,
-        graph_smooth_window: int = 3,
-        graph_max_gap_bins: int = 3,
-        rail_radius: float = 0.5,
-        rail_densify_step: float = 0.5,
+        cfg: dict,
+        db_param_path: Union[str, pth.Path],
         verbose: bool = False,
     ):
-        self.distance_limit = float(distance_limit)
+        self.distance_limit = float(cfg["distance_limit"])
+        self.ground_label = int(cfg["ground_label"])
+        self.rail_label = int(cfg["rail_label"])
+        self.rail_radius = float(cfg["rail_radius"])
+        self.embankment_label = int(cfg["embankment_label"])
+        self.ditch_label = int(cfg["ditch_label"])
 
-        self.ground_label = int(ground_label)
-        self.rail_label = int(rail_label)
-        self.embankment_label = int(embankment_label)
-        self.ditch_label = int(ditch_label)
-
-        # Temporary label assigned to railway loaded from DB.
-        # It is not written to final output.
-        self.max_label = None
-
-        self.length_min = float(length_min)
-        self.length_max = float(length_max)
+        self.length_min = float(cfg["length_min"])
+        self.length_max = float(cfg["length_max"])
         self.length = self.length_max
 
-        self.width_margin = float(width_margin)
+        self.width_margin = float(cfg["width_margin"])
 
-        self.max_curve_ratio = float(max_curve_ratio)
-        self.curve_resolution = float(curve_resolution)
+        self.max_curve_ratio = float(cfg["max_curve_ratio"])
+        self.curve_resolution = float(cfg["curve_resolution"])
 
-        # Only used for centerline binning.
-        # No voxel-grid subsampling is done.
+        # Centerline voxelization follows curvature-check resolution.
         self.voxel = self.curve_resolution
 
-        self.graph_x_bin = float(graph_x_bin)
+        self.graph_x_bin = float(cfg["graph_x_bin"])
+        self.graph_uphill_slope = float(cfg["graph_uphill_slope"])
+        self.graph_min_uphill_points = int(cfg["graph_min_uphill_points"])
+        self.graph_min_embankment_points = int(
+            cfg.get("graph_min_embankment_points", self.graph_min_uphill_points)
+        )
+        self.graph_noise_points = int(cfg["graph_noise_points"])
+        self.graph_smooth_window = int(cfg["graph_smooth_window"])
+        self.graph_max_gap_bins = float(cfg["graph_max_gap_bins"])
 
-        # Positive slope outward means going up.
-        # Negative slope outward means going down.
-        self.graph_uphill_slope = float(graph_uphill_slope)
-        self.graph_downhill_slope = float(graph_downhill_slope)
-        self.graph_flat_slope = float(graph_flat_slope)
-
-        self.graph_min_uphill_points = int(graph_min_uphill_points)
-        self.graph_min_downhill_points = int(graph_min_downhill_points)
-        self.graph_min_flat_points = int(graph_min_flat_points)
-        self.graph_noise_points = int(graph_noise_points)
-        self.graph_smooth_window = int(graph_smooth_window)
-        self.graph_max_gap_bins = int(graph_max_gap_bins)
-
-        self.rail_radius = float(rail_radius)
-        self.rail_densify_step = float(rail_densify_step)
+        # Ditch detection is deliberately separate from embankment detection.
+        # Embankment may stop at a flat bottom; ditch may start immediately
+        # with uphill, or later with a downhill->uphill valley pattern.
+        self.graph_ditch_min_downhill_points = int(
+            cfg.get("graph_ditch_min_downhill_points", self.graph_min_uphill_points)
+        )
+        self.graph_ditch_min_uphill_points = int(
+            cfg.get("graph_ditch_min_uphill_points", self.graph_min_uphill_points)
+        )
+        self.graph_ditch_immediate_points = int(
+            cfg.get("graph_ditch_immediate_points", self.graph_noise_points + 1)
+        )
+        self.graph_ditch_max_flat_points = int(
+            cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
+        )
 
         self.verbose = bool(verbose)
+        self.__db_param = self._load_db_params(db_param_path)
 
-        self.__db_param = None
+    @classmethod
+    def from_config(
+        cls,
+        cfg_path: Union[str, pth.Path],
+        db_param_path: Union[str, pth.Path],
+        verbose: bool = False,
+    ):
+        cfg_path = pth.Path(cfg_path)
+        with open(cfg_path, "r") as f:
+            cfg = json.load(f)
 
-        if db_param_path is not None:
-            self.__db_param = self._load_db_params(db_param_path)
+        return cls(cfg=cfg, db_param_path=db_param_path, verbose=verbose)
 
     @staticmethod
-    def _load_db_params(path: Union[str, pth.Path]) -> dict:
+    def _load_db_params(path: Union[str, pth.Path]):
         path = pth.Path(path)
 
         params = {}
-
         with open(path, "r") as f:
             for line in f:
                 line = line.strip()
-
                 if not line or line.startswith("#"):
                     continue
 
-                key, value = line.split("=", 1)
-                params[key.strip()] = value.strip()
+                k, v = line.split("=", 1)
+                params[k.strip()] = v.strip()
 
         return params
-
-    def _label_rail_points(
-        self,
-        xyz: np.ndarray,
-        labels: np.ndarray,
-        rail_radius: float | None = None,
-    ) -> np.ndarray:
-        """
-        Loads railway geometry from DB and marks cloud points close to it
-        with temporary label self.max_label.
-
-        Important:
-        - original rail_label == 0 is not used for centerline
-        - centerline is built only from this temporary DB railway label
-        - this temporary DB railway label also defines left/right graph split
-        """
-        if xyz.shape[0] == 0:
-            return np.zeros(0, dtype=np.int32)
-
-        if self.__db_param is None:
-            raise RuntimeError(
-                "db_param_path was not provided, so railway cannot be loaded from DB."
-            )
-
-        if rail_radius is None:
-            rail_radius = self.rail_radius
-
-        self.max_label = int(labels.max()) + 1
-
-        xmin = float(xyz[:, 0].min())
-        xmax = float(xyz[:, 0].max())
-        ymin = float(xyz[:, 1].min())
-        ymax = float(xyz[:, 1].max())
-
-        bbox = (xmin, ymin, xmax, ymax)
-
-        rails = self.__load_tracks_from_db(bbox)
-
-        labels_out = np.zeros(xyz.shape[0], dtype=np.int32)
-
-        if len(rails) == 0:
-            return labels_out
-
-        rail_xy = self._densify_lines(
-            rails,
-            step=self.rail_densify_step,
-        )
-
-        if rail_xy.shape[0] == 0:
-            return labels_out
-
-        tree = cKDTree(rail_xy)
-
-        dist, _ = tree.query(
-            xyz[:, :2],
-            k=1,
-            workers=-1,
-        )
-
-        labels_out[dist <= rail_radius] = self.max_label
-
-        return labels_out
 
     def __load_tracks_from_db(self, bbox):
         conn = psycopg2.connect(**self.__db_param)
 
         xmin, ymin, xmax, ymax = bbox
-
         query = """
             SELECT ST_AsText(wspolrzedne_utm)
             FROM data.tory
@@ -372,12 +114,9 @@ class CurvedCutter:
         cur = conn.cursor()
         cur.execute(query, (xmin, ymin, xmax, ymax))
         rows = cur.fetchall()
-
-        cur.close()
         conn.close()
 
         lines = []
-
         for (wkt_line,) in rows:
             geom = shapely_wkt.loads(wkt_line)
 
@@ -388,8 +127,33 @@ class CurvedCutter:
 
         return lines
 
+    def _label_rail_points(self, xyz: np.ndarray, rail_radius: float = 0.5) -> np.ndarray:
+        if xyz.shape[0] == 0:
+            return np.zeros(0, dtype=bool)
+
+        xmin = float(xyz[:, 0].min())
+        xmax = float(xyz[:, 0].max())
+        ymin = float(xyz[:, 1].min())
+        ymax = float(xyz[:, 1].max())
+
+        bbox = (xmin, ymin, xmax, ymax)
+        rails = self.__load_tracks_from_db(bbox)
+
+        if len(rails) == 0:
+            return np.zeros(xyz.shape[0], dtype=bool)
+
+        rail_xy = self._densify_lines(rails, step=0.5)
+
+        if rail_xy.shape[0] == 0:
+            return np.zeros(xyz.shape[0], dtype=bool)
+
+        tree = cKDTree(rail_xy)
+        dist, _ = tree.query(xyz[:, :2])
+
+        return dist <= rail_radius
+
     @staticmethod
-    def _densify_lines(lines, step=0.5):
+    def _densify_lines(lines, step: float = 0.5) -> np.ndarray:
         pts = []
 
         for line in lines:
@@ -399,9 +163,6 @@ class CurvedCutter:
             for d in distances:
                 p = line.interpolate(d)
                 pts.append((p.x, p.y))
-
-        if not pts:
-            return np.empty((0, 2), dtype=np.float64)
 
         return np.asarray(pts, dtype=np.float64)
 
@@ -433,15 +194,18 @@ class CurvedCutter:
         y_min = y.min()
 
         out = pcd[idx].copy()
-
-        # Do NOT subtract x_mid.
-        # x=0 must remain railway center axis.
         out[:, 0] = x
         out[:, 1] = y - y_min
         out[:, 2] = z[idx]
 
         if self.width_margin:
-            keep = np.abs(out[:, 0]) <= self.width_margin
+            x_mid = 0.5 * (x.min() + x.max())
+            width = x.max() - x.min()
+
+            keep = np.abs(out[:, 0] - x_mid) <= 0.5 * (
+                width + 2.0 * self.width_margin
+            )
+
             out = out[keep]
             idx = idx[keep]
 
@@ -492,7 +256,12 @@ class CurvedCutter:
             if b <= a:
                 continue
 
-            ratio = self._curve_ratio_between(a, b, centerline, center_s)
+            ratio = self._curve_ratio_between(
+                s0=a,
+                s1=b,
+                centerline=centerline,
+                center_s=center_s,
+            )
 
             if ratio > self.max_curve_ratio:
                 return float(a)
@@ -517,7 +286,7 @@ class CurvedCutter:
 
         return arc_len / chord_len
 
-    def _build_centerline(self, xy: np.ndarray):
+    def _build_centerline(self, xy: np.ndarray) -> np.ndarray:
         keys = np.floor(xy / self.voxel).astype(np.int64)
 
         _, inverse = np.unique(keys, axis=0, return_inverse=True)
@@ -551,7 +320,7 @@ class CurvedCutter:
         for b in unique_bins:
             mask = bins == b
 
-            if np.count_nonzero(mask) < 1:
+            if np.count_nonzero(mask) < 3:
                 continue
 
             trace_u.append(np.median(u[mask]))
@@ -559,9 +328,6 @@ class CurvedCutter:
 
         trace_u = np.asarray(trace_u, dtype=np.float64)
         trace_v = np.asarray(trace_v, dtype=np.float64)
-
-        if len(trace_u) == 0:
-            return nodes
 
         order = np.argsort(trace_u)
         trace_u = trace_u[order]
@@ -574,6 +340,7 @@ class CurvedCutter:
         if len(trace_u) < 4:
             return center + trace_u[:, None] * forward + trace_v[:, None] * right
 
+        # Bigger = stiffer. Rail should not bend aggressively.
         smoothing = len(trace_u) * self.voxel**2 * 25.0
 
         spline = UnivariateSpline(
@@ -596,9 +363,10 @@ class CurvedCutter:
         xy: np.ndarray,
         centerline: np.ndarray,
         center_s: np.ndarray,
-    ):
+    ) -> np.ndarray:
         tree = cKDTree(centerline)
         _, nearest = tree.query(xy)
+
         return center_s[nearest]
 
     @staticmethod
@@ -606,7 +374,7 @@ class CurvedCutter:
         s: float,
         centerline: np.ndarray,
         center_s: np.ndarray,
-    ):
+    ) -> np.ndarray:
         i = np.searchsorted(center_s, s, side="right") - 1
         i = np.clip(i, 0, len(centerline) - 2)
 
@@ -618,13 +386,14 @@ class CurvedCutter:
         return (1.0 - t) * centerline[i] + t * centerline[i + 1]
 
     @staticmethod
-    def _arc_length(line: np.ndarray):
+    def _arc_length(line: np.ndarray) -> np.ndarray:
         d = np.diff(line, axis=0)
         ds = np.linalg.norm(d, axis=1)
+
         return np.r_[0.0, np.cumsum(ds)]
 
     @staticmethod
-    def _unit(v: np.ndarray):
+    def _unit(v: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(v)
 
         if norm == 0:
@@ -633,295 +402,273 @@ class CurvedCutter:
         return v / norm
 
     @staticmethod
-    def get_graph(xz: np.ndarray, x_bin: float) -> np.ndarray:
-        x = xz[:, 0]
-        z = xz[:, 1]
+    def cast_to_xz_plane(tile: np.ndarray, z_bin: float):
+        x = tile[:, 0]
+        z = tile[:, 2]
 
-        x0 = x.min()
-        bins = np.floor((x - x0) / x_bin).astype(np.int64)
+        z0 = z.min()
+        bins = np.floor((z - z0) / z_bin).astype(np.int64)
 
         order = np.argsort(bins)
         bins = bins[order]
-        z = z[order]
+        x = x[order]
 
         unique_bins, start = np.unique(bins, return_index=True)
 
-        z_sum = np.add.reduceat(z, start)
-        count = np.diff(np.r_[start, len(z)])
+        x_sum = np.add.reduceat(x, start)
+        count = np.diff(np.r_[start, len(x)])
 
-        x_centers = x0 + (unique_bins + 0.5) * x_bin
-        mean_z = z_sum / count
+        z_centers = z0 + (unique_bins + 0.5) * z_bin
+        mean_x = x_sum / count
 
-        return np.column_stack((x_centers, mean_z))
+        return z_centers, mean_x
 
-    def get_side_graphs_from_rail_mask(
+    @staticmethod
+    def get_gradient(graph: np.ndarray) -> np.ndarray:
+        x = graph[:, 0]
+        z = graph[:, 1]
+
+        dz_dx = np.gradient(z, x)
+
+        return np.column_stack((x, dz_dx))
+
+    def get_curve_ratio(
         self,
-        points_rotated_with_railway: np.ndarray,
-        labels_with_railway: np.ndarray,
-        x_bin: float,
-    ) -> tuple[np.ndarray | None, np.ndarray | None, float | None, float | None]:
-        """
-        Split graph into left/right sides using artificial DB railway mask.
+        s: float,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
+        length: float | None = None,
+    ) -> float:
+        if length is None:
+            length = self.length_max
 
-        The split is based on self.max_label points inside the rotated chunk:
-            left side  -> x < min(railway_x)
-            right side -> x > max(railway_x)
+        s1 = min(s + length, center_s[-1])
 
-        No center_dead_zone is needed.
-        """
-        if self.max_label is None:
-            return None, None, None, None
-
-        railway_mask = labels_with_railway == self.max_label
-
-        if not np.any(railway_mask):
-            return None, None, None, None
-
-        railway_x = points_rotated_with_railway[railway_mask, 0]
-
-        rail_x_min = float(np.min(railway_x))
-        rail_x_max = float(np.max(railway_x))
-
-        non_rail_mask = labels_with_railway != self.max_label
-
-        left_mask = non_rail_mask & (points_rotated_with_railway[:, 0] < rail_x_min)
-        right_mask = non_rail_mask & (points_rotated_with_railway[:, 0] > rail_x_max)
-
-        left_points = points_rotated_with_railway[left_mask]
-        right_points = points_rotated_with_railway[right_mask]
-
-        left_graph = None
-        right_graph = None
-
-        if left_points.shape[0] > 0:
-            left_graph = self.get_graph(
-                xz=left_points[:, [0, 2]],
-                x_bin=x_bin,
-            )
-
-        if right_points.shape[0] > 0:
-            right_graph = self.get_graph(
-                xz=right_points[:, [0, 2]],
-                x_bin=x_bin,
-            )
-
-        return left_graph, right_graph, rail_x_min, rail_x_max
+        return self._curve_ratio_between(
+            s0=s,
+            s1=s1,
+            centerline=centerline,
+            center_s=center_s,
+        )
 
     @staticmethod
-    def _smooth_z(
-        z: np.ndarray,
-        smooth_window: int,
-    ) -> np.ndarray:
-        z_for_gradient = z.copy()
+    def _flip_graph_x(graph: np.ndarray | None) -> np.ndarray | None:
+        if graph is None:
+            return None
 
-        if smooth_window >= 3 and len(z_for_gradient) >= smooth_window:
-            if smooth_window % 2 == 0:
-                smooth_window += 1
+        flipped = graph.copy()
+        flipped[:, 0] *= -1.0
 
-            pad = smooth_window // 2
-            z_padded = np.pad(z_for_gradient, pad_width=pad, mode="edge")
-            kernel = np.ones(smooth_window, dtype=np.float64) / smooth_window
-            z_for_gradient = np.convolve(z_padded, kernel, mode="valid")
+        return flipped
 
-        return z_for_gradient
 
     @staticmethod
-    def _first_true_run(
-        mask: np.ndarray,
-        min_points: int,
-        start_idx: int = 0,
-    ) -> tuple[int, int] | None:
-        i = int(start_idx)
+    def _unflip_sections_x(
+        emb: np.ndarray,
+        ditch: np.ndarray,
+        rest: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        def unflip(section: np.ndarray) -> np.ndarray:
+            if section is None or len(section) == 0:
+                return section
 
-        while i < len(mask):
+            out = section.copy()
+            out[:, 0] *= -1.0
+            return out
+
+        return unflip(emb), unflip(ditch), unflip(rest)
+
+    @staticmethod
+    def _first_run(mask: np.ndarray, start: int, stop: int, min_points: int) -> tuple[int, int] | None:
+        i = max(0, start)
+        stop = min(stop, len(mask))
+
+        while i < stop:
             if not mask[i]:
                 i += 1
                 continue
 
             run_start = i
 
-            while i < len(mask) and mask[i]:
+            while i < stop and mask[i]:
                 i += 1
 
-            run_end = i
-
-            if run_end - run_start >= min_points:
-                return run_start, run_end
+            if i - run_start >= min_points:
+                return run_start, i
 
         return None
 
     @staticmethod
-    def _first_non_flat_idx(
-        dz_dout: np.ndarray,
-        flat_slope: float,
-        start_idx: int,
-    ) -> int:
-        i = int(start_idx)
+    def _end_run(mask: np.ndarray, start: int) -> int:
+        i = start
 
-        while i < len(dz_dout):
-            if abs(dz_dout[i]) > flat_slope:
-                return i
-
+        while i < len(mask) and mask[i]:
             i += 1
 
-        return len(dz_dout)
+        return i
 
     @staticmethod
-    def _empty_graph() -> np.ndarray:
-        return np.empty((0, 2), dtype=np.float64)
+    def _find_ditch_interval(
+        emb_end: int,
+        uphill_mask: np.ndarray,
+        downhill_mask: np.ndarray,
+        min_downhill_points: int,
+        min_uphill_points: int,
+        immediate_points: int,
+        max_flat_points: int,
+    ) -> tuple[int, int] | None:
+        n = len(uphill_mask)
 
-    @staticmethod
-    def get_graph(xz: np.ndarray, x_bin: float) -> np.ndarray:
-        x = xz[:, 0]
-        z = xz[:, 1]
+        if emb_end >= n:
+            return None
 
-        x0 = x.min()
-        bins = np.floor((x - x0) / x_bin).astype(np.int64)
-
-        order = np.argsort(bins)
-        bins = bins[order]
-        z = z[order]
-
-        unique_bins, start = np.unique(bins, return_index=True)
-
-        z_sum = np.add.reduceat(z, start)
-        count = np.diff(np.r_[start, len(z)])
-
-        x_centers = x0 + (unique_bins + 0.5) * x_bin
-        mean_z = z_sum / count
-
-        return np.column_stack((x_centers, mean_z))
-
-    @staticmethod
-    def _split_graph_by_x_gap(
-        graph: np.ndarray,
-        max_gap: float,
-    ) -> list[np.ndarray]:
-        if graph is None or len(graph) == 0:
-            return []
-
-        order = np.argsort(graph[:, 0])
-        graph = graph[order]
-
-        gaps = np.diff(graph[:, 0])
-        split_after = np.flatnonzero(gaps > max_gap)
-
-        parts = []
-        start = 0
-
-        for idx in split_after:
-            end = idx + 1
-            part = graph[start:end]
-
-            if len(part):
-                parts.append(part)
-
-            start = end
-
-        part = graph[start:]
-
-        if len(part):
-            parts.append(part)
-
-        return parts
-
-    @staticmethod
-    def _pick_two_side_components(
-        graph_parts: list[np.ndarray],
-    ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        if len(graph_parts) == 0:
-            return None, None
-
-        if len(graph_parts) == 1:
-            part = graph_parts[0]
-
-            if np.mean(part[:, 0]) < 0:
-                return part, None
-
-            return None, part
-
-        # Pick two largest continuous components.
-        parts = sorted(graph_parts, key=len, reverse=True)[:2]
-
-        # Assign by actual X position, not by sign around zero.
-        parts = sorted(parts, key=lambda g: np.mean(g[:, 0]))
-
-        left_graph = parts[0]
-        right_graph = parts[1]
-
-        return left_graph, right_graph
-
-    @staticmethod
-    def get_side_graphs(
-        xz: np.ndarray,
-        x_bin: float,
-        max_gap_bins: float = 3.0,
-    ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        graph = CurvedCutter.get_graph(
-            xz=xz,
-            x_bin=x_bin,
+        # Case 1: embankment already reached the ditch bottom.
+        # Then ditch starts directly after embankment and is represented
+        # by the stable uphill wall.
+        immediate_stop = min(n, emb_end + immediate_points + min_uphill_points)
+        immediate = CurvedCutter._first_run(
+            mask=uphill_mask,
+            start=emb_end,
+            stop=immediate_stop,
+            min_points=min_uphill_points,
         )
 
-        graph_parts = CurvedCutter._split_graph_by_x_gap(
-            graph=graph,
-            max_gap=x_bin * max_gap_bins,
-        )
+        if immediate is not None:
+            uphill_start, uphill_end = immediate
 
-        left_graph, right_graph = CurvedCutter._pick_two_side_components(
-            graph_parts=graph_parts,
-        )
+            # Include a short flat/noisy transition before uphill as ditch bottom,
+            # but keep ditch attached to embankment.
+            if uphill_start - emb_end <= immediate_points:
+                return emb_end, CurvedCutter._end_run(uphill_mask, uphill_end)
 
-        return left_graph, right_graph
+        # Case 2: a ditch appears later. In this version, if a later ditch is
+        # found, embankment will be extended up to the ditch start by the caller.
+        # Therefore the final topology remains:
+        #     embankment -> ditch -> rest
+        # not:
+        #     embankment -> rest -> ditch -> rest
+        i = emb_end
+
+        while i < n:
+            uphill = CurvedCutter._first_run(
+                mask=uphill_mask,
+                start=i,
+                stop=n,
+                min_points=min_uphill_points,
+            )
+            downhill = CurvedCutter._first_run(
+                mask=downhill_mask,
+                start=i,
+                stop=n,
+                min_points=min_downhill_points,
+            )
+
+            if uphill is None and downhill is None:
+                return None
+
+            # Uphill-only candidate. This covers a ditch whose downhill side was
+            # already consumed by embankment/flat bottom detection.
+            uphill_candidate = None
+            if uphill is not None:
+                uphill_start, uphill_end = uphill
+                uphill_candidate = (
+                    uphill_start,
+                    CurvedCutter._end_run(uphill_mask, uphill_end),
+                )
+
+            # Downhill -> optional flat/noisy bottom -> uphill candidate.
+            downhill_candidate = None
+            if downhill is not None:
+                downhill_start, downhill_end = downhill
+                j = downhill_end
+
+                while j < n and downhill_mask[j]:
+                    j += 1
+
+                flat_stop = min(n, j + max_flat_points + min_uphill_points)
+                uphill_after = CurvedCutter._first_run(
+                    mask=uphill_mask,
+                    start=j,
+                    stop=flat_stop,
+                    min_points=min_uphill_points,
+                )
+
+                if uphill_after is not None:
+                    _, uphill_end = uphill_after
+                    downhill_candidate = (
+                        downhill_start,
+                        CurvedCutter._end_run(uphill_mask, uphill_end),
+                    )
+
+            candidates = [
+                candidate
+                for candidate in (downhill_candidate, uphill_candidate)
+                if candidate is not None
+            ]
+
+            if candidates:
+                return min(candidates, key=lambda item: item[0])
+
+            # The first downhill was not followed by uphill quickly enough.
+            # Continue after it and look for the next possible structure.
+            if downhill is not None:
+                i = max(i + 1, downhill[1] + 1)
+            else:
+                return None
+
+        return None
 
     @staticmethod
     def split_graph_by_gradient(
         graph: np.ndarray,
-        side: str,
         uphill_slope: float,
         min_uphill_points: int,
+        min_embankment_points: int,
         noise_points: int,
         smooth_window: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        ditch_min_downhill_points: int | None = None,
+        ditch_min_uphill_points: int | None = None,
+        ditch_immediate_points: int | None = None,
+        ditch_max_flat_points: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Split one already-separated continuous side graph into:
-            section_1: from graph start to the end of the first meaningful uphill part
-            section_2: the rest
+        Input graph must always be oriented:
+            x increases from rail outward.
 
-        If slope is not above uphill_slope, it is treated as flat/downhill.
+        Embankment:
+            starts near rail and continues while the profile goes downhill.
+            ends when flat OR uphill lasts for at least min_uphill_points.
 
-        side:
-            "left"  -> outward direction is -X
-            "right" -> outward direction is +X
+        Ditch:
+            is searched after embankment and can be either:
+            - immediate uphill after embankment, when embankment reached bottom;
+            - later downhill -> optional flat/noisy bottom -> uphill.
+
+        Embankment stop condition is ignored until at least
+        min_embankment_points graph samples are included.
+
+        No minimum depth test is used.
         """
         empty = np.empty((0, 2), dtype=np.float64)
 
         if graph is None or len(graph) < 2:
-            return empty, empty
+            return empty, empty, empty
 
         x = graph[:, 0].astype(np.float64)
         z = graph[:, 1].astype(np.float64)
 
-        if side == "left":
-            outward = -x
-        elif side == "right":
-            outward = x
-        else:
-            raise ValueError(f"side must be 'left' or 'right', got {side}")
-
-        order = np.argsort(outward)
+        order = np.argsort(x)
         x = x[order]
         z = z[order]
-        outward = outward[order]
 
-        keep = np.r_[True, np.diff(outward) > 1e-9]
+        keep = np.r_[True, np.diff(x) > 1e-9]
         x = x[keep]
         z = z[keep]
-        outward = outward[keep]
 
         full_graph = np.column_stack((x, z))
 
-        if len(outward) < 2:
-            return empty, full_graph
+        if len(x) < 2:
+            return empty, empty, full_graph
 
         z_for_gradient = z.copy()
 
@@ -934,83 +681,84 @@ class CurvedCutter:
             kernel = np.ones(smooth_window, dtype=np.float64) / smooth_window
             z_for_gradient = np.convolve(z_padded, kernel, mode="valid")
 
-        dz_dout = np.gradient(z_for_gradient, outward)
+        dz_dx = np.gradient(z_for_gradient, x)
 
-        uphill_mask = dz_dout > uphill_slope
+        stop_mask = dz_dx >= -uphill_slope
+        emb_end = None
 
-        run_start = None
-        run_end = None
+        min_embankment_points = max(1, int(min_embankment_points))
+        i = max(noise_points, min_embankment_points)
 
-        i = 0
-
-        while i < len(uphill_mask):
-            if not uphill_mask[i]:
+        while i < len(stop_mask):
+            if not stop_mask[i]:
                 i += 1
                 continue
 
-            candidate_start = i
+            start = i
 
-            while i < len(uphill_mask) and uphill_mask[i]:
+            while i < len(stop_mask) and stop_mask[i]:
                 i += 1
 
-            candidate_end = i
-            candidate_len = candidate_end - candidate_start
+            if i - start >= min_uphill_points and start >= min_embankment_points:
+                emb_end = start
+                break
 
-            if candidate_len < min_uphill_points:
-                continue
+        if emb_end is None:
+            return full_graph, empty, empty
 
-            if candidate_end <= noise_points:
-                continue
+        ditch_min_downhill_points = (
+            min_uphill_points
+            if ditch_min_downhill_points is None
+            else int(ditch_min_downhill_points)
+        )
+        ditch_min_uphill_points = (
+            min_uphill_points
+            if ditch_min_uphill_points is None
+            else int(ditch_min_uphill_points)
+        )
+        ditch_immediate_points = (
+            noise_points + 1
+            if ditch_immediate_points is None
+            else int(ditch_immediate_points)
+        )
+        ditch_max_flat_points = (
+            noise_points + 2
+            if ditch_max_flat_points is None
+            else int(ditch_max_flat_points)
+        )
 
-            run_start = candidate_start
-            run_end = candidate_end
-            break
+        uphill_mask = dz_dx > uphill_slope
+        downhill_mask = dz_dx < -uphill_slope
 
-        if run_start is None:
-            return empty, full_graph
+        ditch_interval = CurvedCutter._find_ditch_interval(
+            emb_end=emb_end,
+            uphill_mask=uphill_mask,
+            downhill_mask=downhill_mask,
+            min_downhill_points=ditch_min_downhill_points,
+            min_uphill_points=ditch_min_uphill_points,
+            immediate_points=ditch_immediate_points,
+            max_flat_points=ditch_max_flat_points,
+        )
 
-        split_idx = run_end
+        if ditch_interval is None:
+            embankment = full_graph[:emb_end]
+            return embankment, empty, full_graph[emb_end:]
 
-        section_1 = full_graph[:split_idx]
-        section_2 = full_graph[split_idx:]
+        ditch_start, ditch_end = ditch_interval
+        ditch_start = max(emb_end, ditch_start)
+        ditch_end = min(len(full_graph), max(ditch_start, ditch_end))
 
-        return section_1, section_2
+        if ditch_end <= ditch_start:
+            embankment = full_graph[:emb_end]
+            return embankment, empty, full_graph[emb_end:]
 
-    @staticmethod
-    def split_side_graphs_by_gradient(
-        left_graph: np.ndarray | None,
-        right_graph: np.ndarray | None,
-        uphill_slope: float,
-        min_uphill_points: int,
-        noise_points: int,
-        smooth_window: int,
-    ):
-        
-        # TODO add third part
-        left_1, left_2 = None, None
-        right_1, right_2 = None, None
+        # Important: if ditch starts later, embankment is extended to the ditch
+        # start. This keeps labels contiguous: embankment -> ditch -> rest.
+        embankment = full_graph[:ditch_start]
+        ditch = full_graph[ditch_start:ditch_end]
+        rest = full_graph[ditch_end:]
 
-        if left_graph is not None and len(left_graph):
-            left_1, left_2 = CurvedCutter.split_graph_by_gradient(
-                graph=left_graph,
-                side="left",
-                uphill_slope=uphill_slope,
-                min_uphill_points=min_uphill_points,
-                noise_points=noise_points,
-                smooth_window=smooth_window,
-            )
-
-        if right_graph is not None and len(right_graph):
-            right_1, right_2 = CurvedCutter.split_graph_by_gradient(
-                graph=right_graph,
-                side="right",
-                uphill_slope=uphill_slope,
-                min_uphill_points=min_uphill_points,
-                noise_points=noise_points,
-                smooth_window=smooth_window,
-            )
-
-        return left_1, left_2, right_1, right_2
+        return embankment, ditch, rest
 
     @staticmethod
     def _mask_points_by_graph_section(
@@ -1026,107 +774,74 @@ class CurvedCutter:
         x_min = section[:, 0].min() - x_padding
         x_max = section[:, 0].max() + x_padding
 
-        mask = (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
+        return (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
 
-        return mask
-
-    def cast_sections_to_labels(
+    def _center_chunk_x_on_rail(
         self,
-        points: np.ndarray,
-        labels: np.ndarray,
-        left_1: np.ndarray | None,
-        left_2: np.ndarray | None,
-        right_1: np.ndarray | None,
-        right_2: np.ndarray | None,
-    ) -> np.ndarray:
-        labels_out = labels.copy()
+        points_chunk_rotated: np.ndarray,
+        rail_mask: np.ndarray,
+    ) -> bool:
+        """
+        Center local X coordinate on rail points.
 
-        x_padding = 0.5 * self.graph_x_bin
+        This replaces the incorrect min/max tile centering. Min/max centering is
+        unstable because the terrain extent is usually asymmetric. Rail-based
+        centering keeps x=0 tied to the track/centerline reference.
+        """
+        if np.count_nonzero(rail_mask) == 0:
+            return False
 
-        left_1_mask = self._mask_points_by_graph_section(
-            points=points,
-            section=left_1,
-            x_padding=x_padding,
-        )
-        right_1_mask = self._mask_points_by_graph_section(
-            points=points,
-            section=right_1,
-            x_padding=x_padding,
-        )
+        rail_x = points_chunk_rotated[rail_mask, 0]
 
-        left_2_mask = self._mask_points_by_graph_section(
-            points=points,
-            section=left_2,
-            x_padding=x_padding,
-        )
-        right_2_mask = self._mask_points_by_graph_section(
-            points=points,
-            section=right_2,
-            x_padding=x_padding,
+        # Robust center of rail band. Better than min/max of the whole tile.
+        x_center = 0.5 * (
+            np.percentile(rail_x, 5.0)
+            + np.percentile(rail_x, 95.0)
         )
 
-        section_2_mask = left_2_mask | right_2_mask
-        section_1_mask = left_1_mask | right_1_mask
+        points_chunk_rotated[:, 0] -= x_center
 
-        labels_out[section_2_mask] = self.ground_label
-        labels_out[section_1_mask] = self.ditch_label
-
-        return labels_out
+        return True
 
     def _find_nearest_points(
         self,
         points: np.ndarray,
         labels: np.ndarray,
+        rail_mask: np.ndarray,
     ) -> np.ndarray:
-        """
-        Keeps:
-        - artificial DB railway points, because they are needed later to split graph sides
-        - non-railway points close to artificial DB railway
-
-        Important:
-        self.max_label points must NOT disappear here.
-        """
         nearest_points_mask = np.zeros(points.shape[0], dtype=bool)
 
-        if self.max_label is None:
+        candidate_mask = (labels == self.ground_label) & ~rail_mask
+
+        nearest_points_mask[rail_mask] = True
+
+        if np.count_nonzero(candidate_mask) == 0:
             return nearest_points_mask
 
-        railway_mask = labels == self.max_label
+        rail_points = points[rail_mask]
 
-        if not np.any(railway_mask):
+        if rail_points.shape[0] == 0:
             return nearest_points_mask
-
-        # Keep artificial railway points.
-        # They are needed by get_side_graphs_from_rail_mask().
-        nearest_points_mask[railway_mask] = True
-
-        candidate_indices = np.flatnonzero(labels != self.max_label)
-
-        if candidate_indices.size == 0:
-            return nearest_points_mask
-
-        railway_points = points[railway_mask]
 
         tree = cKDTree(
-            railway_points[:, :2],
+            rail_points[:, :2],
             copy_data=False,
         )
 
         distances, _ = tree.query(
-            points[candidate_indices, :2],
+            points[candidate_mask, :2],
             k=1,
             distance_upper_bound=self.distance_limit,
             workers=-1,
         )
 
-        nearest_points_mask[candidate_indices] = distances < self.distance_limit
+        nearest_points_mask[candidate_mask] = distances < self.distance_limit
 
         return nearest_points_mask
 
     def iter_rectangles(
         self,
         pcd: np.ndarray,
-        labels: np.ndarray,
         xy: np.ndarray,
         z: np.ndarray,
         centerline: np.ndarray,
@@ -1159,73 +874,151 @@ class CurvedCutter:
 
             s = s1
 
+    def _build_xz_graph(self, xz: np.ndarray) -> np.ndarray:
+        x = xz[:, 0]
+        z = xz[:, 1]
+
+        x0 = x.min()
+        bins = np.floor((x - x0) / self.graph_x_bin).astype(np.int64)
+
+        order = np.argsort(bins)
+        bins = bins[order]
+        z = z[order]
+
+        unique_bins, start = np.unique(bins, return_index=True)
+
+        count = np.diff(np.r_[start, len(z)])
+        x_centers = x0 + (unique_bins + 0.5) * self.graph_x_bin
+        mean_z = np.add.reduceat(z, start) / count
+
+        return np.column_stack((x_centers, mean_z))
+
+    def _split_graph_into_sides(
+        self,
+        graph: np.ndarray,
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        max_gap = self.graph_x_bin * self.graph_max_gap_bins
+        split_at = np.flatnonzero(np.diff(graph[:, 0]) > max_gap) + 1
+        graph_parts = [part for part in np.split(graph, split_at) if len(part)]
+
+        left_graph = None
+        right_graph = None
+
+        if len(graph_parts) == 1:
+            if np.mean(graph_parts[0][:, 0]) < 0:
+                left_graph = graph_parts[0]
+            else:
+                right_graph = graph_parts[0]
+
+        elif len(graph_parts) > 1:
+            side_graphs = sorted(graph_parts, key=len, reverse=True)[:2]
+
+            left_graph, right_graph = sorted(
+                side_graphs,
+                key=lambda part: np.mean(part[:, 0]),
+            )
+
+        return left_graph, right_graph
+
+    def _apply_section_labels(
+        self,
+        labels_sectioned: np.ndarray,
+        points_chunk_rotated: np.ndarray,
+        left_emb: np.ndarray,
+        left_ditch: np.ndarray,
+        left_rest: np.ndarray,
+        right_emb: np.ndarray,
+        right_ditch: np.ndarray,
+        right_rest: np.ndarray,
+    ) -> np.ndarray:
+        x_padding = 0.5 * self.graph_x_bin
+
+        left_emb_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=left_emb,
+            x_padding=x_padding,
+        )
+        left_ditch_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=left_ditch,
+            x_padding=x_padding,
+        )
+        left_rest_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=left_rest,
+            x_padding=x_padding,
+        )
+
+        right_emb_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=right_emb,
+            x_padding=x_padding,
+        )
+        right_ditch_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=right_ditch,
+            x_padding=x_padding,
+        )
+        right_rest_mask = self._mask_points_by_graph_section(
+            points=points_chunk_rotated,
+            section=right_rest,
+            x_padding=x_padding,
+        )
+
+        emb_mask = left_emb_mask | right_emb_mask
+        ditch_mask = left_ditch_mask | right_ditch_mask
+        rest_mask = left_rest_mask | right_rest_mask
+
+        # Order matters. Ditch should override embankment/rest if padding overlaps.
+        labels_sectioned[rest_mask] = self.ground_label
+        labels_sectioned[emb_mask] = self.embankment_label
+        labels_sectioned[ditch_mask] = self.ditch_label
+
+        return labels_sectioned
+
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        labels_out = labels.copy()
+        full_labels = labels.copy()
 
-        if points.shape[0] == 0:
-            return labels_out
+        ground_mask = full_labels == self.ground_label
+        ground_idx = np.flatnonzero(ground_mask)
 
-        labels = labels.astype(np.int32, copy=False)
+        if ground_idx.size == 0:
+            return full_labels
 
-        railway_db_labels = self._label_rail_points(
-            xyz=points,
-            labels=labels,
+        ground_rail = points[ground_idx].copy()
+        ground_rail_labels = full_labels[ground_idx].copy()
+
+        rail_mask = self._label_rail_points(
+            ground_rail,
             rail_radius=self.rail_radius,
         )
 
-        if self.max_label is None:
-            return labels_out
+        if np.count_nonzero(rail_mask) == 0:
+            return full_labels
 
-        railway_db_mask = railway_db_labels == self.max_label
+        # Local normalization for numerical stability.
+        ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
+        ground_rail[:, 2] -= ground_rail[:, 2].min()
+        ground_rail = ground_rail.astype(np.float32, copy=False)
 
-        if railway_db_mask.sum() == 0:
-            return labels_out
+        rail = ground_rail[rail_mask]
+        centerline_xy = rail[:, :2]
 
-        work_labels = labels.copy()
-        work_labels[railway_db_mask] = self.max_label
+        if centerline_xy.shape[0] == 0:
+            return full_labels
 
-        mask_ground_embankment_railway = (
-            (labels == self.embankment_label)
-            | (labels == self.rail_label)
-            | (labels == self.ground_label)
-            | railway_db_mask
-        )
-
-        ground_embankment_indices = np.flatnonzero(mask_ground_embankment_railway)
-
-        ground_embankment_points = points[mask_ground_embankment_railway].copy()
-        ground_embankment_labels = work_labels[mask_ground_embankment_railway].copy()
-
-        ground_embankment_points[:, :2] -= np.mean(
-            ground_embankment_points[:, :2],
-            axis=0,
-        )
-        ground_embankment_points[:, 2] -= np.min(
-            ground_embankment_points[:, 2],
-            axis=0,
-        )
-        ground_embankment_points = ground_embankment_points.astype(np.float32)
-
-        mask_railway_local = ground_embankment_labels == self.max_label
-        railway_points = ground_embankment_points[mask_railway_local]
-
-        if railway_points.shape[0] < 4:
-            return labels_out
-
-        centerline_xy = railway_points[:, :2]
-
-        xy = ground_embankment_points[:, :2]
-        z = ground_embankment_points[:, 2]
+        xy = ground_rail[:, :2]
+        z = ground_rail[:, 2]
 
         centerline = self._build_centerline(centerline_xy)
 
         if centerline.shape[0] < 2:
-            return labels_out
+            return full_labels
 
         center_s = self._arc_length(centerline)
 
         if center_s[-1] <= 0:
-            return labels_out
+            return full_labels
 
         point_s = self._assign_points_to_centerline(
             xy=xy,
@@ -1234,75 +1027,130 @@ class CurvedCutter:
         )
 
         for points_chunk_rotated, indices in self.iter_rectangles(
-            pcd=ground_embankment_points,
-            labels=ground_embankment_labels,
+            pcd=ground_rail,
             xy=xy,
             z=z,
             centerline=centerline,
             center_s=center_s,
             point_s=point_s,
         ):
-            chunk_labels = ground_embankment_labels[indices]
-
-            nearest_points_mask = self._find_nearest_points(
-                points_chunk_rotated,
-                chunk_labels,
-            )
-
-            points_chunk_rotated = points_chunk_rotated[nearest_points_mask]
-            labels_nearest = ground_embankment_labels[indices][nearest_points_mask]
-            section_indices = indices[nearest_points_mask]
-
-            no_embankment_mask = labels_nearest != self.embankment_label
-            points_chunk_rotated = points_chunk_rotated[no_embankment_mask]
-            labels_nearest = labels_nearest[no_embankment_mask]
-            section_indices = section_indices[no_embankment_mask]
-
-            if len(points_chunk_rotated) == 0:
+            if points_chunk_rotated.shape[0] == 0:
                 continue
 
-            xz = points_chunk_rotated[:, [0, 2]]
+            labels_chunk = ground_rail_labels[indices]
+            rail_mask_chunk = rail_mask[indices]
 
-            left_graph, right_graph = self.get_side_graphs(
-                xz=xz,
-                x_bin=self.graph_x_bin,
-                max_gap_bins=self.graph_max_gap_bins,
+            centered = self._center_chunk_x_on_rail(
+                points_chunk_rotated=points_chunk_rotated,
+                rail_mask=rail_mask_chunk,
             )
 
-            left_1, left_2, right_1, right_2 = self.split_side_graphs_by_gradient(
-                left_graph=left_graph,
-                right_graph=right_graph,
-                uphill_slope=self.graph_uphill_slope,
-                min_uphill_points=self.graph_min_uphill_points,
-                noise_points=self.graph_noise_points,
-                smooth_window=self.graph_smooth_window,
-            )
+            if not centered:
+                continue
 
-            labels_sectioned = self.cast_sections_to_labels(
+            nearest_points_mask = self._find_nearest_points(
                 points=points_chunk_rotated,
-                labels=labels_nearest,
-                left_1=left_1,
-                left_2=left_2,
-                right_1=right_1,
-                right_2=right_2,
+                labels=labels_chunk,
+                rail_mask=rail_mask_chunk,
             )
 
-            # Debug plotting if needed:
-            # plot_xz_side_sections(
-            #     xz=xz,
-            #     left_1=left_1,
-            #     left_2=left_2,
-            #     right_1=right_1,
-            #     right_2=right_2,
-            # )
+            if np.count_nonzero(nearest_points_mask) == 0:
+                continue
 
-            # from utils.plot_cloud import plot_cloud
-            # plot_cloud(points_chunk_rotated, labels_sectioned)
+            points_nearest = points_chunk_rotated[nearest_points_mask]
+            labels_nearest = labels_chunk[nearest_points_mask]
+            section_indices = indices[nearest_points_mask]
+            rail_mask_nearest = rail_mask_chunk[nearest_points_mask]
 
-            labels_out[ground_embankment_indices[section_indices]] = labels_sectioned
+            if points_nearest.shape[0] == 0:
+                continue
 
-        return labels_out
+            xz = points_nearest[~rail_mask_nearest][:, [0, 2]]
 
+            if xz.shape[0] == 0:
+                continue
+
+            graph = self._build_xz_graph(xz)
+
+            if graph.shape[0] < 2:
+                continue
+
+            left_graph, right_graph = self._split_graph_into_sides(graph)
+
+            empty = np.empty((0, 2), dtype=np.float64)
+
+            left_emb = empty
+            left_ditch = empty
+            left_rest = empty
+
+            right_emb = empty
+            right_ditch = empty
+            right_rest = empty
+
+            if left_graph is not None:
+                left_graph_flipped = self._flip_graph_x(left_graph)
+
+                left_emb, left_ditch, left_rest = self.split_graph_by_gradient(
+                    graph=left_graph_flipped,
+                    uphill_slope=self.graph_uphill_slope,
+                    min_uphill_points=self.graph_min_uphill_points,
+                    min_embankment_points=self.graph_min_embankment_points,
+                    noise_points=self.graph_noise_points,
+                    smooth_window=self.graph_smooth_window,
+                    ditch_min_downhill_points=self.graph_ditch_min_downhill_points,
+                    ditch_min_uphill_points=self.graph_ditch_min_uphill_points,
+                    ditch_immediate_points=self.graph_ditch_immediate_points,
+                    ditch_max_flat_points=self.graph_ditch_max_flat_points,
+                )
+
+                left_emb, left_ditch, left_rest = self._unflip_sections_x(
+                    left_emb,
+                    left_ditch,
+                    left_rest,
+                )
+
+            if right_graph is not None:
+                right_emb, right_ditch, right_rest = self.split_graph_by_gradient(
+                    graph=right_graph,
+                    uphill_slope=self.graph_uphill_slope,
+                    min_uphill_points=self.graph_min_uphill_points,
+                    min_embankment_points=self.graph_min_embankment_points,
+                    noise_points=self.graph_noise_points,
+                    smooth_window=self.graph_smooth_window,
+                    ditch_min_downhill_points=self.graph_ditch_min_downhill_points,
+                    ditch_min_uphill_points=self.graph_ditch_min_uphill_points,
+                    ditch_immediate_points=self.graph_ditch_immediate_points,
+                    ditch_max_flat_points=self.graph_ditch_max_flat_points,
+                )
+
+            plot_xz_side_sections(
+                xz=xz,
+                left_emb=left_emb,
+                left_ditch=left_ditch,
+                left_rest=left_rest,
+                right_emb=right_emb,
+                right_ditch=right_ditch,
+                right_rest=right_rest,
+            )
+
+            labels_sectioned = labels_nearest.copy()
+
+            labels_sectioned = self._apply_section_labels(
+                labels_sectioned=labels_sectioned,
+                points_chunk_rotated=points_nearest,
+                left_emb=left_emb,
+                left_ditch=left_ditch,
+                left_rest=left_rest,
+                right_emb=right_emb,
+                right_ditch=right_ditch,
+                right_rest=right_rest,
+            )
+
+            full_indices = ground_idx[section_indices]
+            labels_sectioned[rail_mask_nearest] = labels[full_indices[rail_mask_nearest]]
+            full_labels[full_indices] = labels_sectioned
+
+        return full_labels
 
 if __name__ == "__main__":
     import laspy
@@ -1315,55 +1163,13 @@ if __name__ == "__main__":
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
     labels = np.asarray(las_file.classification)
 
-    cutter = CurvedCutter(
-        db_param_path="src/db_params.txt",
-        distance_limit=8.0,
-        ground_label=1,
-        rail_label=0,
-        embankment_label=10,
-        ditch_label=11,
-        length_min=0.5,
-        length_max=10.0,
-        width_margin=0.0,
-        max_curve_ratio=1.03,
-        curve_resolution=0.25,
-        graph_x_bin=0.25,
+    cfg_path = pth.Path(__file__).parent / "ground_segm_config.json"
+    db_param_path = pth.Path(__file__).parent / "db_params.txt"
 
-        # Embankment:
-        # top + first downhill + flattening after first downhill.
-        graph_downhill_slope=0.10,
-        graph_min_downhill_points=3,
-
-        # Flattening detection after downhill.
-        graph_flat_slope=0.05,
-        graph_min_flat_points=3,
-
-        # Ditch wall.
-        graph_uphill_slope=0.20,
-        graph_min_uphill_points=3,
-
-        graph_noise_points=2,
-        graph_smooth_window=3,
-        graph_max_gap_bins = 3,
-
-        rail_radius=0.5,
-        rail_densify_step=0.5,
-        verbose=True,
+    cutter = CurvedCutter.from_config(
+        cfg_path=cfg_path,
+        db_param_path=db_param_path,
+        verbose=False,
     )
 
     labels_sectioned = cutter.segment(points, labels)
-
-
-    points_vis = points.copy()
-    points_vis[:, :2] -= points_vis[:, :2].mean(axis=0)
-    points_vis[:, 2] -= points_vis[:, 2].min()
-    points_vis = points_vis.astype(np.float32)
-
-    mask_testing = (
-        (labels == 0)
-        | (labels == 1)
-        | (labels == 10)
-        | (labels == 11)
-    )
-
-    plot_cloud(points_vis[mask_testing], labels_sectioned[mask_testing])

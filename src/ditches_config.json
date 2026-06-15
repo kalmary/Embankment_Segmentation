@@ -1,0 +1,18 @@
+{
+  "distance_limit": 8.0,
+  "ground_label": 1,
+  "rail_label": 0,
+  "embankment_label": 10,
+  "ditch_label": 11,
+  "length_min": 0.5,
+  "length_max": 10.0,
+  "width_margin": 0.0,
+  "max_curve_ratio": 1.03,
+  "curve_resolution": 0.25,
+  "graph_x_bin": 0.25,
+  "graph_uphill_slope": 0.2,
+  "graph_min_uphill_points": 3,
+  "graph_noise_points": 2,
+  "graph_smooth_window": 3,
+  "graph_max_gap_bins": 3.0
+}
