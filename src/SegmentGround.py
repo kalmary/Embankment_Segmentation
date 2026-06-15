@@ -996,6 +996,8 @@ class GroundSegmenter:
         if np.count_nonzero(rail_mask) == 0:
             return full_labels
 
+        full_labels[ground_idx[rail_mask]] = self.embankment_label
+
         # Local normalization for numerical stability.
         ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
         ground_rail[:, 2] -= ground_rail[:, 2].min()
@@ -1137,7 +1139,7 @@ class GroundSegmenter:
             )
 
             full_indices = ground_idx[section_indices]
-            labels_sectioned[rail_mask_nearest] = labels[full_indices[rail_mask_nearest]]
+            labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
         return full_labels
