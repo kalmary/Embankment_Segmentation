@@ -1178,7 +1178,7 @@ if __name__ == "__main__":
     from utils.plot_cloud import plot_cloud
 
     las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_mod.laz"
+        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_rln.laz"
     )
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
