@@ -66,6 +66,8 @@ class GroundSegmenter:
         self.graph_ditch_max_flat_points = int(
             cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
         )
+        self.smoothing = bool(cfg.get("smoothing", True))
+        self.smoothing_level = float(cfg.get("smoothing_level", 25.0))
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)
@@ -847,7 +849,7 @@ class GroundSegmenter:
         z: np.ndarray,
         centerline: np.ndarray,
         center_s: np.ndarray,
-        point_s: np.ndarray,
+        point_s: np.ndarray
     ):
         s = 0.0
         total = center_s[-1]
@@ -984,6 +986,186 @@ class GroundSegmenter:
         labels_sectioned[ditch_mask] = self.ditch_label
 
         return labels_sectioned
+
+    def _centerline_xy_coordinates(
+        self,
+        xy: np.ndarray,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        tree = cKDTree(centerline)
+        _, nearest = tree.query(xy)
+
+        previous = np.maximum(nearest - 1, 0)
+        following = np.minimum(nearest + 1, len(centerline) - 1)
+        tangent = centerline[following] - centerline[previous]
+        tangent_norm = np.linalg.norm(tangent, axis=1)
+
+        valid = tangent_norm > 0.0
+        tangent[valid] /= tangent_norm[valid, None]
+        tangent[~valid] = np.array([1.0, 0.0], dtype=np.float64)
+
+        right = np.column_stack((tangent[:, 1], -tangent[:, 0]))
+        offset = np.sum((xy - centerline[nearest]) * right, axis=1)
+
+        return center_s[nearest], offset
+
+    def _cast_smoothed_label(
+        self,
+        out_labels: np.ndarray,
+        labels: np.ndarray,
+        station: np.ndarray,
+        offset: np.ndarray,
+        label: int,
+    ) -> None:
+        source_mask = labels == label
+
+        if np.count_nonzero(source_mask) < 8:
+            return
+
+        s_bin = max(self.length_max, self.curve_resolution)
+
+        for side in (-1.0, 1.0):
+            side_source = source_mask & (offset * side >= 0.0)
+
+            if np.count_nonzero(side_source) < 8:
+                continue
+
+            s_side = station[side_source]
+            outward_side = np.abs(offset[side_source])
+            s0 = float(s_side.min())
+            bins = np.floor((s_side - s0) / s_bin).astype(np.int64)
+
+            sample_s = []
+            sample_x = []
+
+            for b in np.unique(bins):
+                bin_mask = bins == b
+
+                if np.count_nonzero(bin_mask) < 4:
+                    continue
+
+                sample_s.append(float(np.median(s_side[bin_mask])))
+                sample_x.append(float(np.percentile(outward_side[bin_mask], 95.0)))
+
+            sample_s = np.asarray(sample_s, dtype=np.float64)
+            sample_x = np.asarray(sample_x, dtype=np.float64)
+
+            if sample_s.shape[0] < 4:
+                continue
+
+            order = np.argsort(sample_s)
+            sample_s = sample_s[order]
+            sample_x = sample_x[order]
+
+            keep = np.r_[True, np.diff(sample_s) > 1e-9]
+            sample_s = sample_s[keep]
+            sample_x = sample_x[keep]
+
+            if sample_s.shape[0] < 4:
+                continue
+
+            x_var = float(np.var(sample_x))
+
+            if x_var <= 1e-12:
+                border = np.full(
+                    station.shape,
+                    float(sample_x.mean()),
+                    dtype=np.float64,
+                )
+            else:
+                smooth_factor = self.smoothing_level * sample_s.shape[0] * x_var
+                spline = UnivariateSpline(
+                    sample_s,
+                    sample_x,
+                    k=min(3, sample_s.shape[0] - 1),
+                    s=smooth_factor,
+                )
+                border = spline(station)
+
+            target_mask = (
+                (offset * side >= 0.0)
+                & (station >= sample_s.min())
+                & (station <= sample_s.max())
+                & (np.abs(offset) <= border)
+            )
+
+            out_labels[target_mask] = label
+
+    def ground_smoothing(
+        self,
+        points: np.ndarray,
+        labels: np.ndarray,
+    ) -> np.ndarray:
+        if not self.smoothing:
+            return labels
+
+        out = labels.copy()
+        ground_mask = (
+            (labels == self.ground_label)
+            | (labels == self.embankment_label)
+            | (labels == self.ditch_label)
+            | (labels == self.rail_label)
+        )
+
+        if np.count_nonzero(ground_mask) == 0:
+            return out
+
+        ground_idx = np.flatnonzero(ground_mask)
+        ground_points = points[ground_idx]
+        ground_labels = labels[ground_idx]
+        rail_mask = ground_labels == self.rail_label
+        centerline_mask = rail_mask | (ground_labels == self.embankment_label)
+
+        if np.count_nonzero(centerline_mask) < 4:
+            return out
+
+        xy = ground_points[:, :2].astype(np.float64, copy=True)
+        xy -= xy.mean(axis=0)
+
+        centerline = self._build_centerline(xy[centerline_mask])
+
+        if centerline.shape[0] < 2:
+            return out
+
+        center_s = self._arc_length(centerline)
+
+        if center_s[-1] <= 0.0:
+            return out
+
+        station, offset = self._centerline_xy_coordinates(
+            xy=xy,
+            centerline=centerline,
+            center_s=center_s,
+        )
+
+        smoothed_labels = np.full(
+            ground_labels.shape,
+            self.ground_label,
+            dtype=ground_labels.dtype,
+        )
+
+        self._cast_smoothed_label(
+            out_labels=smoothed_labels,
+            labels=ground_labels,
+            station=station,
+            offset=offset,
+            label=self.ditch_label,
+        )
+        self._cast_smoothed_label(
+            out_labels=smoothed_labels,
+            labels=ground_labels,
+            station=station,
+            offset=offset,
+            label=self.embankment_label,
+        )
+
+        smoothed_labels[rail_mask & (smoothed_labels == self.embankment_label)] = (
+            self.rail_label
+        )
+        out[ground_idx] = smoothed_labels
+
+        return out
 
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
@@ -1168,10 +1350,10 @@ class GroundSegmenter:
             )
 
             full_indices = ground_idx[section_indices]
-            labels_sectioned[rail_mask_nearest] = labels[full_indices[rail_mask_nearest]]
+            labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
-        return full_labels
+        return self.ground_smoothing(points, full_labels)
 
 if __name__ == "__main__":
     import laspy
