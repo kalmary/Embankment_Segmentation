@@ -10,6 +10,7 @@ from scipy.interpolate import UnivariateSpline
 from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
+from tqdm import tqdm
 
 # from utils.plot_sections import *
 
@@ -66,6 +67,7 @@ class GroundSegmenter:
             cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
         )
         self.smoothing = bool(cfg.get("smoothing", True))
+        self.xy_border_stiffness = float(cfg.get("xy_border_stiffness", 8.0))
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)
@@ -847,33 +849,35 @@ class GroundSegmenter:
         z: np.ndarray,
         centerline: np.ndarray,
         center_s: np.ndarray,
-        point_s: np.ndarray,
+        point_s: np.ndarray
     ):
         s = 0.0
         total = center_s[-1]
 
-        while s < total:
-            s1 = self._best_cut_end(
-                s=s,
-                centerline=centerline,
-                center_s=center_s,
-            )
-
-            idx = np.flatnonzero((point_s >= s) & (point_s < s1))
-
-            if len(idx):
-                yield self._rotated_part(
-                    pcd=pcd,
-                    xy=xy,
-                    z=z,
-                    idx=idx,
+        with tqdm(desc="Tiling", unit="tile", leave=False, disable=not self.verbose) as pbar:
+            while s < total:
+                s1 = self._best_cut_end(
                     s=s,
-                    s1=s1,
                     centerline=centerline,
                     center_s=center_s,
                 )
 
-            s = s1
+                idx = np.flatnonzero((point_s >= s) & (point_s < s1))
+
+                if len(idx):
+                    pbar.update(1)
+                    yield self._rotated_part(
+                        pcd=pcd,
+                        xy=xy,
+                        z=z,
+                        idx=idx,
+                        s=s,
+                        s1=s1,
+                        centerline=centerline,
+                        center_s=center_s,
+                    )
+
+                s = s1
 
     def _build_xz_graph(self, xz: np.ndarray) -> np.ndarray:
         x = xz[:, 0]
@@ -977,8 +981,76 @@ class GroundSegmenter:
 
         return labels_sectioned
 
+
     @staticmethod
-    def _centerline_coordinates(
+    def _centerline_tangents(centerline: np.ndarray) -> np.ndarray:
+        tangents = np.zeros_like(centerline, dtype=np.float64)
+
+        if centerline.shape[0] < 2:
+            return tangents
+
+        tangents[0] = centerline[1] - centerline[0]
+        tangents[-1] = centerline[-1] - centerline[-2]
+
+        if centerline.shape[0] > 2:
+            tangents[1:-1] = centerline[2:] - centerline[:-2]
+
+        norms = np.linalg.norm(tangents, axis=1)
+        valid = norms > 0.0
+
+        tangents[valid] /= norms[valid, None]
+
+        if np.any(~valid):
+            tangents[~valid] = np.array([1.0, 0.0], dtype=np.float64)
+
+        return tangents
+
+    @staticmethod
+    def _smooth_border_curve(
+        s_samples: np.ndarray,
+        x_samples: np.ndarray,
+        s_eval: np.ndarray,
+        stiffness: float,
+    ) -> np.ndarray | None:
+        if s_samples.shape[0] < 4:
+            return None
+
+        order = np.argsort(s_samples)
+        s_samples = s_samples[order].astype(np.float64, copy=False)
+        x_samples = x_samples[order].astype(np.float64, copy=False)
+
+        keep = np.r_[True, np.diff(s_samples) > 1e-9]
+        s_samples = s_samples[keep]
+        x_samples = x_samples[keep]
+
+        if s_samples.shape[0] < 4:
+            return None
+
+        x_var = float(np.var(x_samples))
+
+        if x_var <= 1e-12:
+            return np.full(
+                s_eval.shape,
+                float(np.mean(x_samples)),
+                dtype=np.float64,
+            )
+
+        k = min(3, s_samples.shape[0] - 1)
+
+        # Bigger stiffness -> bigger spline residual allowance -> smoother curve.
+        smooth_factor = max(0.0, stiffness) * s_samples.shape[0] * x_var
+
+        spline = UnivariateSpline(
+            s_samples,
+            x_samples,
+            k=k,
+            s=smooth_factor,
+        )
+
+        return spline(s_eval)
+
+    def _points_to_centerline_frame(
+        self,
         xy: np.ndarray,
         centerline: np.ndarray,
         center_s: np.ndarray,
@@ -986,196 +1058,338 @@ class GroundSegmenter:
         tree = cKDTree(centerline)
         _, nearest = tree.query(xy)
 
-        previous = np.maximum(nearest - 1, 0)
-        following = np.minimum(nearest + 1, len(centerline) - 1)
-        tangent = centerline[following] - centerline[previous]
-        tangent_norm = np.linalg.norm(tangent, axis=1)
-        valid = tangent_norm > 0
-        tangent[valid] /= tangent_norm[valid, None]
-        tangent[~valid] = np.array([1.0, 0.0])
+        tangents = self._centerline_tangents(centerline)
+        nearest_tangents = tangents[nearest]
 
-        right = np.column_stack((tangent[:, 1], -tangent[:, 0]))
-        offset = np.sum((xy - centerline[nearest]) * right, axis=1)
-
-        return center_s[nearest], offset
-
-    def _fit_label_border(
-        self,
-        station: np.ndarray,
-        offset: np.ndarray,
-        label_mask: np.ndarray,
-        side: int,
-    ):
-        mask = label_mask & (offset * side > 0)
-
-        if np.count_nonzero(mask) < 4:
-            return None
-
-        station_side = station[mask]
-        offset_side = offset[mask]
-        bin_size = max(self.length_min, self.curve_resolution)
-        bins = np.floor((station_side - station_side.min()) / bin_size).astype(np.int64)
-
-        border_station = []
-        border_offset = []
-        percentile = 90.0 if side > 0 else 10.0
-
-        for bin_id in np.unique(bins):
-            bin_mask = bins == bin_id
-
-            if np.count_nonzero(bin_mask) < 2:
-                continue
-
-            border_station.append(np.median(station_side[bin_mask]))
-            border_offset.append(np.percentile(offset_side[bin_mask], percentile))
-
-        border_station = np.asarray(border_station, dtype=np.float64)
-        border_offset = np.asarray(border_offset, dtype=np.float64)
-
-        if border_station.size < 2:
-            return None
-
-        order = np.argsort(border_station)
-        border_station = border_station[order]
-        border_offset = border_offset[order]
-        keep = np.r_[True, np.diff(border_station) > 1e-9]
-        border_station = border_station[keep]
-        border_offset = border_offset[keep]
-
-        if border_station.size < 2:
-            return None
-
-        degree = min(3, border_station.size - 1)
-        smoothing = border_station.size * self.graph_x_bin**2
-
-        return UnivariateSpline(
-            border_station,
-            border_offset,
-            k=degree,
-            s=smoothing,
-            ext=3,
+        rights = np.column_stack(
+            (
+                nearest_tangents[:, 1],
+                -nearest_tangents[:, 0],
+            )
         )
 
-    def _smooth_labels(
+        rel = xy - centerline[nearest]
+
+        s_coord = center_s[nearest]
+        lateral = np.einsum("ij,ij->i", rel, rights)
+
+        return s_coord, lateral
+
+    @staticmethod
+    def _side_bin_ids(s: np.ndarray, s_bin: float) -> tuple[np.ndarray, float]:
+        s0 = float(s.min())
+        bins = np.floor((s - s0) / s_bin).astype(np.int64)
+
+        return bins, s0
+
+    def _sample_side_borders(
         self,
-        ground_xy: np.ndarray,
-        original_labels: np.ndarray,
-        full_labels: np.ndarray,
-        ground_idx: np.ndarray,
-        rail_mask: np.ndarray,
-        centerline: np.ndarray,
-        center_s: np.ndarray,
+        s: np.ndarray,
+        outward: np.ndarray,
+        labels: np.ndarray,
+        s_bin: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Sample original side borders from already segmented labels.
+
+        Returned curves are in the side frame:
+            outward == 0 near rail / centerline
+            outward increases away from rail
+
+        embankment border:
+            outer edge of embankment.
+
+        ditch border:
+            outer edge of ditch.
+        """
+        empty = np.empty(0, dtype=np.float64)
+
+        if s.shape[0] == 0:
+            return empty, empty, empty, empty
+
+        bins, _ = self._side_bin_ids(s=s, s_bin=s_bin)
+        unique_bins = np.unique(bins)
+
+        emb_s = []
+        emb_x = []
+        ditch_s = []
+        ditch_x = []
+
+        for b in unique_bins:
+            bin_mask = bins == b
+
+            if np.count_nonzero(bin_mask) < 6:
+                continue
+
+            s_mid = float(np.median(s[bin_mask]))
+
+            emb_values = outward[
+                bin_mask & (labels == self.embankment_label)
+            ]
+            ditch_values = outward[
+                bin_mask & (labels == self.ditch_label)
+            ]
+
+            if emb_values.shape[0] >= 3:
+                emb_s.append(s_mid)
+                emb_x.append(float(np.percentile(emb_values, 95.0)))
+
+            if ditch_values.shape[0] >= 3:
+                ditch_s.append(s_mid)
+                ditch_x.append(float(np.percentile(ditch_values, 95.0)))
+
+        return (
+            np.asarray(emb_s, dtype=np.float64),
+            np.asarray(emb_x, dtype=np.float64),
+            np.asarray(ditch_s, dtype=np.float64),
+            np.asarray(ditch_x, dtype=np.float64),
+        )
+
+    def _regularize_one_side_by_fitted_borders(
+        self,
+        side_mask: np.ndarray,
+        s_all: np.ndarray,
+        outward_all: np.ndarray,
+        labels_all: np.ndarray,
+        rail_mask_all: np.ndarray,
+        out_labels: np.ndarray,
+    ) -> None:
+        if np.count_nonzero(side_mask) == 0:
+            return
+
+        s = s_all[side_mask]
+        outward = outward_all[side_mask]
+        labels = labels_all[side_mask]
+        rail_mask = rail_mask_all[side_mask]
+
+        s_bin = max(self.curve_resolution, self.graph_x_bin)
+
+        emb_s, emb_x, ditch_s, ditch_x = self._sample_side_borders(
+            s=s,
+            outward=outward,
+            labels=labels,
+            s_bin=s_bin,
+        )
+
+        emb_curve = self._smooth_border_curve(
+            s_samples=emb_s,
+            x_samples=emb_x,
+            s_eval=s,
+            stiffness=self.xy_border_stiffness,
+        )
+
+        ditch_curve = self._smooth_border_curve(
+            s_samples=ditch_s,
+            x_samples=ditch_x,
+            s_eval=s,
+            stiffness=self.xy_border_stiffness,
+        )
+
+        if emb_curve is None and ditch_curve is None:
+            return
+
+        valid = np.ones(s.shape[0], dtype=bool)
+
+        if emb_curve is not None:
+            valid &= s >= emb_s.min()
+            valid &= s <= emb_s.max()
+
+        if ditch_curve is not None:
+            valid &= s >= ditch_s.min()
+            valid &= s <= ditch_s.max()
+
+        if np.count_nonzero(valid) == 0:
+            return
+
+        recast = labels.copy()
+
+        if emb_curve is None:
+            # No embankment border on this side. Keep embankment as-is.
+            emb_curve = np.full(s.shape, -np.inf, dtype=np.float64)
+
+        if ditch_curve is None:
+            # No ditch border on this side. Everything outside embankment is ground.
+            ditch_curve = emb_curve.copy()
+
+        # Keep topology stable:
+        # rail/center -> embankment -> ditch -> ground.
+        ditch_curve = np.maximum(ditch_curve, emb_curve)
+
+        non_rail_valid = valid & ~rail_mask
+
+        recast[non_rail_valid & (outward <= emb_curve)] = self.embankment_label
+        recast[
+            non_rail_valid
+            & (outward > emb_curve)
+            & (outward <= ditch_curve)
+        ] = self.ditch_label
+        recast[non_rail_valid & (outward > ditch_curve)] = self.ground_label
+
+        # Rail rule:
+        # - rail inside fitted embankment border becomes embankment
+        # - rail outside fitted embankment border becomes ground
+        rail_valid = valid & rail_mask
+        recast[rail_valid & (outward <= emb_curve)] = self.embankment_label
+        recast[rail_valid & (outward > emb_curve)] = self.ground_label
+
+        out_labels[side_mask] = recast
+
+    def _regularize_xy_borders_by_curve_fit(
+        self,
+        points: np.ndarray,
+        labels: np.ndarray,
     ) -> np.ndarray:
+        """
+        Final label-space postprocess.
+
+        It uses only the final labels and fits smooth XY border curves to the
+        already segmented borders:
+            embankment / ditch
+            ditch / ground
+
+        It does not do raster voting or Gaussian smoothing. It extracts the
+        original borders as lateral offsets from the rail centerline, fits
+        smooth splines along the track direction, and recasts only the target
+        label family:
+            ground, embankment, ditch, rail.
+        """
         if not self.smoothing:
-            return full_labels
+            return labels
 
-        ground_labels = full_labels[ground_idx].copy()
-        station, offset = self._centerline_coordinates(
-            xy=ground_xy,
-            centerline=centerline,
-            center_s=center_s,
+        out = labels.copy()
+
+        target_mask = (
+            (out == self.ground_label)
+            | (out == self.embankment_label)
+            | (out == self.ditch_label)
+            | (out == self.rail_label)
         )
 
-        embankment_mask = ground_labels == self.embankment_label
-        ditch_mask = ground_labels == self.ditch_label
+        if np.count_nonzero(target_mask) == 0:
+            return out
 
-        left_embankment = self._fit_label_border(
-            station, offset, embankment_mask, side=-1
-        )
-        right_embankment = self._fit_label_border(
-            station, offset, embankment_mask, side=1
-        )
-        left_ditch = self._fit_label_border(station, offset, ditch_mask, side=-1)
-        right_ditch = self._fit_label_border(station, offset, ditch_mask, side=1)
+        target_idx = np.flatnonzero(target_mask)
+        target_points = points[target_idx]
+        target_labels = out[target_idx]
 
-        if left_embankment is not None and right_embankment is not None:
-            left_border = left_embankment(station)
-            right_border = right_embankment(station)
-            inside_embankment = (offset >= left_border) & (offset <= right_border)
-            ground_labels[inside_embankment] = self.embankment_label
+        rail_mask = target_labels == self.rail_label
 
-        for side, embankment_border, ditch_border in (
-            (-1, left_embankment, left_ditch),
-            (1, right_embankment, right_ditch),
-        ):
-            if embankment_border is None or ditch_border is None:
-                continue
-
-            embankment_offset = embankment_border(station)
-            ditch_offset = ditch_border(station)
-            side_mask = offset * side > 0
-            between_borders = (
-                side_mask
-                & (offset * side > embankment_offset * side)
-                & (offset * side <= ditch_offset * side)
-            )
-            replace_with_ground = between_borders & (ground_labels != self.ditch_label)
-            ground_labels[replace_with_ground] = self.ground_label
-
-            outside_ditch = side_mask & (offset * side > ditch_offset * side)
-            ground_labels[outside_ditch & (ground_labels == self.ditch_label)] = (
-                self.ground_label
-            )
-
-        ground_labels[rail_mask] = self.embankment_label
-        full_labels[ground_idx] = ground_labels
-        full_labels[original_labels != self.ground_label] = original_labels[
-            original_labels != self.ground_label
-        ]
-
-        return full_labels
-
-    def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
-        full_labels = np.asarray(labels, dtype=np.uint8).copy()
-
-        ground_mask = full_labels == self.ground_label
-        ground_idx = np.flatnonzero(ground_mask)
-
-        if ground_idx.size == 0:
-            return full_labels
-
-        ground_rail = points[ground_idx].copy()
-        ground_rail_labels = full_labels[ground_idx].copy()
-
-        rail_mask = self._label_rail_points(
-            ground_rail,
+        detected_rail_mask = self._label_rail_points(
+            target_points,
             rail_radius=self.rail_radius,
         )
+        rail_mask |= detected_rail_mask
 
-        if np.count_nonzero(rail_mask) == 0:
-            return full_labels
+        centerline_source_mask = rail_mask | (target_labels == self.embankment_label)
 
-        full_labels[ground_idx[rail_mask]] = self.embankment_label
+        if np.count_nonzero(centerline_source_mask) < 4:
+            return out
 
-        # Local normalization for numerical stability.
-        ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
-        ground_rail[:, 2] -= ground_rail[:, 2].min()
-        ground_rail = ground_rail.astype(np.float32, copy=False)
+        xy = target_points[:, :2].astype(np.float64, copy=True)
+        xy -= xy.mean(axis=0)
 
-        rail = ground_rail[rail_mask]
-        centerline_xy = rail[:, :2]
-
-        if centerline_xy.shape[0] == 0:
-            return full_labels
-
-        xy = ground_rail[:, :2]
-        z = ground_rail[:, 2]
-
-        centerline = self._build_centerline(centerline_xy)
+        centerline = self._build_centerline(xy[centerline_source_mask])
 
         if centerline.shape[0] < 2:
-            return full_labels
+            return out
 
         center_s = self._arc_length(centerline)
 
-        if center_s[-1] <= 0:
-            return full_labels
+        if center_s[-1] <= 0.0:
+            return out
 
-        point_s = self._assign_points_to_centerline(
+        s_coord, lateral = self._points_to_centerline_frame(
             xy=xy,
             centerline=centerline,
             center_s=center_s,
         )
+
+        work_labels = target_labels.copy()
+
+        right_mask = lateral >= 0.0
+        left_mask = lateral < 0.0
+
+        self._regularize_one_side_by_fitted_borders(
+            side_mask=right_mask,
+            s_all=s_coord,
+            outward_all=lateral,
+            labels_all=target_labels,
+            rail_mask_all=rail_mask,
+            out_labels=work_labels,
+        )
+
+        self._regularize_one_side_by_fitted_borders(
+            side_mask=left_mask,
+            s_all=s_coord,
+            outward_all=-lateral,
+            labels_all=target_labels,
+            rail_mask_all=rail_mask,
+            out_labels=work_labels,
+        )
+
+        out[target_idx] = work_labels
+
+        return out
+
+    def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        full_labels = np.asarray(labels, dtype=np.uint8).copy()
+
+        with tqdm(total=1, desc="Filtering PCD...", unit="step", total=3, leave=False, position=2, disable=not self.verbose) as pbar:
+            ground_mask = full_labels == self.ground_label
+            ground_idx = np.flatnonzero(ground_mask)
+
+            if ground_idx.size == 0:
+                return full_labels
+
+            ground_rail = points[ground_idx].copy()
+            ground_rail_labels = full_labels[ground_idx].copy()
+
+            pbar.update(1)
+            rail_mask = self._label_rail_points(
+                ground_rail,
+                rail_radius=self.rail_radius,
+            )
+            pbar.update(2)
+
+            if np.count_nonzero(rail_mask) == 0:
+                return full_labels
+
+            full_labels[ground_idx[rail_mask]] = self.embankment_label
+
+            # Local normalization for numerical stability.
+            ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
+            ground_rail[:, 2] -= ground_rail[:, 2].min()
+            ground_rail = ground_rail.astype(np.float32, copy=False)
+    
+            rail = ground_rail[rail_mask]
+            pbar.update(1)
+
+        with tqdm(total=1, desc="Finding centerline", unit="tile", total=2, leave=False, position=2, disable=not self.verbose) as pbar:
+            centerline_xy = rail[:, :2]
+
+            if centerline_xy.shape[0] == 0:
+                return full_labels
+
+            xy = ground_rail[:, :2]
+            z = ground_rail[:, 2]
+
+            centerline = self._build_centerline(centerline_xy)
+            pbar.update(1)
+
+            if centerline.shape[0] < 2:
+                return full_labels
+
+            center_s = self._arc_length(centerline)
+
+            if center_s[-1] <= 0:
+                return full_labels
+
+            point_s = self._assign_points_to_centerline(
+                xy=xy,
+                centerline=centerline,
+                center_s=center_s,
+            )
+            pbar.update(2)
 
         for points_chunk_rotated, indices in self.iter_rectangles(
             pcd=ground_rail,
@@ -1291,14 +1505,9 @@ class GroundSegmenter:
             labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
-        return self._smooth_labels(
-            ground_xy=xy,
-            original_labels=labels,
-            full_labels=full_labels,
-            ground_idx=ground_idx,
-            rail_mask=rail_mask,
-            centerline=centerline,
-            center_s=center_s,
+        return self._regularize_xy_borders_by_curve_fit(
+            points=points,
+            labels=full_labels,
         )
 
 if __name__ == "__main__":

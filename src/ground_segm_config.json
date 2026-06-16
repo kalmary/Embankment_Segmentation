@@ -21,5 +21,6 @@
   "graph_ditch_min_uphill_points": 3,
   "graph_ditch_immediate_points": 3,
   "graph_ditch_max_flat_points": 5,
-  "smoothing": true
+  "smoothing": true,
+  "xy_border_stiffness": 8.0
 }
