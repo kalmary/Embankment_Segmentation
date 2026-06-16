@@ -1207,5 +1207,6 @@ if __name__ == "__main__":
         verbose=True,
     )
 
+
     labels_sectioned = cutter.segment(points, labels)
     plot_cloud(points, labels_sectioned)
