@@ -1192,7 +1192,7 @@ if __name__ == "__main__":
     cutter = GroundSegmenter.from_config(
         cfg_path=cfg_path,
         db_param_path=db_param_path,
-        verbose=False,
+        verbose=True,
     )
 
     labels_sectioned = cutter.segment(points, labels)
