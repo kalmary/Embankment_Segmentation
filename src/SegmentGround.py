@@ -858,7 +858,7 @@ class GroundSegmenter:
             desc="Tiling",
             unit="tile",
             leave=False,
-            position=2,
+            position=1,
             disable=not self.verbose,
         ) as pbar:
             while s < total:
@@ -1005,7 +1005,7 @@ class GroundSegmenter:
             unit="step",
             total=3,
             leave=False,
-            position=2,
+            position=1,
             disable=not self.verbose,
         ) as pbar:
             ground_mask = full_labels == self.ground_label
@@ -1040,7 +1040,7 @@ class GroundSegmenter:
             unit="step",
             total=2,
             leave=False,
-            position=2,
+            position=1,
             disable=not self.verbose,
         ) as pbar:
             centerline_xy = rail[:, :2]
