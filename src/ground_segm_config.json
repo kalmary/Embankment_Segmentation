@@ -22,5 +22,5 @@
   "graph_ditch_immediate_points": 3,
   "graph_ditch_max_flat_points": 5,
   "smoothing": true,
-  "smooth_level": 10
+  "smooth_level": 5
 }
