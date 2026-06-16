@@ -1233,7 +1233,7 @@ class GroundSegmenter:
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
-        with tqdm(desc="Filtering PCD...", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
+        with tqdm(desc="Filtering PCD", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
             ground_mask = (full_labels == self.ground_label) | (
                 full_labels == self.rail_label
             )
