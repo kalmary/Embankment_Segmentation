@@ -1234,7 +1234,9 @@ class GroundSegmenter:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
         with tqdm(desc="Filtering PCD...", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
-            ground_mask = full_labels == self.ground_label
+            ground_mask = (full_labels == self.ground_label) | (
+                full_labels == self.rail_label
+            )
             ground_idx = np.flatnonzero(ground_mask)
 
             if ground_idx.size == 0:
@@ -1242,6 +1244,8 @@ class GroundSegmenter:
 
             ground_rail = points[ground_idx].copy()
             ground_rail_labels = full_labels[ground_idx].copy()
+            original_rail_mask = ground_rail_labels == self.rail_label
+            ground_rail_labels[original_rail_mask] = self.ground_label
 
             pbar.update(1)
             rail_mask = self._label_rail_points(
@@ -1415,8 +1419,13 @@ class GroundSegmenter:
                 centerline=centerline,
                 center_s=center_s,
             )
-            original_rail_mask = labels[ground_idx] == self.rail_label
-            full_labels[ground_idx[original_rail_mask]] = self.rail_label
+
+        original_rail_mask = labels[ground_idx] == self.rail_label
+        rail_on_embankment_mask = original_rail_mask & (
+            full_labels[ground_idx] == self.embankment_label
+        )
+        full_labels[ground_idx[original_rail_mask]] = self.ground_label
+        full_labels[ground_idx[rail_on_embankment_mask]] = self.rail_label
 
         return full_labels
 
