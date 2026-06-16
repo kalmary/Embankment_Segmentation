@@ -7,6 +7,7 @@ from typing import Union
 import numpy as np
 import psycopg2
 from scipy.interpolate import UnivariateSpline
+from scipy.ndimage import gaussian_filter1d
 from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
@@ -66,8 +67,11 @@ class GroundSegmenter:
         self.graph_ditch_max_flat_points = int(
             cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
         )
-        self.smoothing = bool(cfg.get("smoothing", True))
-        self.smoothing_level = float(cfg.get("smoothing_level", 25.0))
+
+        # Boundary smoothing along the centerline.
+        # smooth_level is the Gaussian sigma in arc-length meters.
+        self.smooth = bool(cfg.get("smooth", True))
+        self.smooth_level = float(cfg.get("smooth_level", 10.0))
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)
@@ -464,7 +468,6 @@ class GroundSegmenter:
 
         return flipped
 
-
     @staticmethod
     def _unflip_sections_x(
         emb: np.ndarray,
@@ -854,13 +857,7 @@ class GroundSegmenter:
         s = 0.0
         total = center_s[-1]
 
-        with tqdm(
-            desc="Tiling",
-            unit="tile",
-            leave=False,
-            position=1,
-            disable=not self.verbose,
-        ) as pbar:
+        with tqdm(desc="Tiling", unit="tile", leave=False, disable=not self.verbose) as pbar:
             while s < total:
                 s1 = self._best_cut_end(
                     s=s,
@@ -987,30 +984,258 @@ class GroundSegmenter:
 
         return labels_sectioned
 
-    def ground_smoothing(
+    # -------------------------------------------------------------------------
+    # Boundary smoothing
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _project_to_sl_frame(
+        xy: np.ndarray,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Project 2D XY points into the centerline (s, x_lateral) frame.
+
+        s          arc-length position along the centerline.
+        x_lateral  signed cross-track distance; positive = right of forward.
+
+        Uses the tangent of the nearest centerline segment, same convention
+        as _rotated_part (right = [forward_y, -forward_x]).
+        """
+        tree = cKDTree(centerline)
+        _, nn = tree.query(xy)
+
+        i = np.clip(nn, 0, len(centerline) - 2)
+
+        delta = centerline[i + 1] - centerline[i]
+        norms = np.linalg.norm(delta, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-9, 1.0, norms)
+        tangent = delta / norms
+
+        right = np.column_stack([tangent[:, 1], -tangent[:, 0]])
+
+        s_vals = center_s[nn]
+        x_lateral = np.einsum("ij,ij->i", xy - centerline[i], right)
+
+        return s_vals, x_lateral
+
+    @staticmethod
+    def _outer_boundary_curve(
+        s: np.ndarray,
+        x_abs: np.ndarray,
+        labels: np.ndarray,
+        target_label: int,
+        s_bin_centers: np.ndarray,
+        s_bin_size: float,
+        pcd_edge_margin: float,
+    ) -> np.ndarray:
+        """
+        For each s-bin, find the outermost (max |x|) boundary of target_label.
+
+        Bins where the target label extends to the PCD edge are marked NaN —
+        those are scan limits, not terrain transitions.
+
+        Same function is used for both embankment outer boundary and ditch outer
+        boundary; just pass a different target_label.
+
+        Returns array of shape (n_bins,) with NaN where boundary not found.
+        """
+        n = len(s_bin_centers)
+        boundary = np.full(n, np.nan)
+
+        s_lo = s_bin_centers[0] - 0.5 * s_bin_size
+        bin_idx = np.clip(
+            np.floor((s - s_lo) / s_bin_size).astype(np.int64),
+            0, n - 1,
+        )
+
+        for b in range(n):
+            in_bin = bin_idx == b
+
+            if not np.any(in_bin):
+                continue
+
+            target_in_bin = in_bin & (labels == target_label)
+
+            if not np.any(target_in_bin):
+                continue
+
+            max_target = x_abs[target_in_bin].max()
+            max_all = x_abs[in_bin].max()
+
+            # Skip bins where target reaches the scan boundary.
+            if max_target >= max_all - pcd_edge_margin:
+                continue
+
+            boundary[b] = max_target
+
+        return boundary
+
+    @staticmethod
+    def _smooth_boundary(
+        s_centers: np.ndarray,
+        boundary: np.ndarray,
+        smooth_sigma_m: float,
+    ) -> np.ndarray:
+        """
+        Gaussian-smooth a 1D boundary curve.
+
+        NaN gaps (missing s-bins) are filled by linear interpolation before
+        smoothing so the Gaussian has no holes to smear. Edge bins are filled
+        by nearest-valid clamping (np.interp default).
+
+        smooth_sigma_m is the Gaussian sigma in arc-length meters.
+        sigma_bins = 0 → identity (no smoothing), handled by gaussian_filter1d.
+        """
+        valid = ~np.isnan(boundary)
+
+        if np.sum(valid) < 2:
+            return boundary.copy()
+
+        filled = boundary.copy()
+        filled[~valid] = np.interp(
+            s_centers[~valid],
+            s_centers[valid],
+            boundary[valid],
+        )
+
+        bin_size = (s_centers[-1] - s_centers[0]) / max(len(s_centers) - 1, 1)
+        sigma_bins = max(0.0, smooth_sigma_m / bin_size)
+
+        return gaussian_filter1d(filled, sigma=sigma_bins)
+
+    def _smooth_label_boundaries(
         self,
         points: np.ndarray,
         labels: np.ndarray,
+        rail_mask: np.ndarray,
+        centerline: np.ndarray,
+        center_s: np.ndarray,
     ) -> np.ndarray:
-        if not self.smoothing:
-            return labels
+        """
+        Smooth embankment and ditch boundaries along the centerline.
 
-        return labels
+        The per-tile gradient detector produces correct but sharp label
+        transitions at tile edges. This pass works in the global (s, x_lateral)
+        frame and replaces those crisp rectangles with smooth boundary curves.
+
+        Algorithm
+        ---------
+        1. Project all ground/embankment/ditch points to (s, x_lateral).
+        2. Reset every relevant point to ground_label (clean slate).
+        3. For each side (left/right), extract the outer boundary curve for
+           embankment and ditch using _outer_boundary_curve (same function,
+           different target_label).
+        4. Smooth both curves with Gaussian sigma = self.smooth_level [metres].
+        5. Relabel:
+             ditch  → emb_outer_smooth < |x| ≤ ditch_outer_smooth
+             emb    → |x| ≤ emb_outer_smooth
+           (applied only in s-ranges where that label was originally detected)
+        6. Restore rail_label on points that are still embankment (rail is
+           always inside embankment; don't restore rails that drifted to ground).
+
+        Parameters
+        ----------
+        points    Normalised 3D point array (ground_rail space).
+        labels    Current label array for those points (same length).
+        rail_mask Boolean mask identifying rail-proximity points within labels.
+        """
+        relevant_mask = np.isin(
+            labels,
+            [self.ground_label, self.embankment_label, self.ditch_label],
+        )
+
+        if not np.any(relevant_mask):
+            return labels.copy()
+
+        rel_idx = np.flatnonzero(relevant_mask)
+        rel_xy = points[rel_idx, :2]
+        rel_labels = labels[rel_idx]
+
+        s_vals, x_vals = self._project_to_sl_frame(rel_xy, centerline, center_s)
+
+        # S-bin grid at centerline voxel resolution.
+        s_bin_size = self.curve_resolution
+        s0, s1 = float(s_vals.min()), float(s_vals.max())
+        n_bins = max(4, int(np.ceil((s1 - s0) / s_bin_size)))
+        s_centers = s0 + (np.arange(n_bins) + 0.5) * s_bin_size
+
+        # PCD edge margin reuses the x-bin size (same physical scale).
+        pcd_edge_margin = self.graph_x_bin
+
+        result = labels.copy()
+        result[rel_idx] = self.ground_label  # clean slate for relevant points
+
+        for side_sign in (+1.0, -1.0):
+            # side_sign > 0 → right of forward; < 0 → left.
+            side_mask = (x_vals * side_sign) >= 0
+
+            if not np.any(side_mask):
+                continue
+
+            side_idx = np.flatnonzero(side_mask)
+            side_s = s_vals[side_idx]
+            side_x = np.abs(x_vals[side_idx])
+            side_labels = rel_labels[side_idx]
+
+            # --- Extract outer boundaries (same function for both labels). ---
+            emb_outer = self._outer_boundary_curve(
+                s=side_s,
+                x_abs=side_x,
+                labels=side_labels,
+                target_label=self.embankment_label,
+                s_bin_centers=s_centers,
+                s_bin_size=s_bin_size,
+                pcd_edge_margin=pcd_edge_margin,
+            )
+
+            ditch_outer = self._outer_boundary_curve(
+                s=side_s,
+                x_abs=side_x,
+                labels=side_labels,
+                target_label=self.ditch_label,
+                s_bin_centers=s_centers,
+                s_bin_size=s_bin_size,
+                pcd_edge_margin=pcd_edge_margin,
+            )
+
+            if np.all(np.isnan(emb_outer)):
+                continue
+
+            # --- Smooth boundary curves. ---
+            emb_smooth = self._smooth_boundary(s_centers, emb_outer, self.smooth_level)
+            ditch_smooth = self._smooth_boundary(s_centers, ditch_outer, self.smooth_level)
+
+            # Presence flags: only apply labels in s-ranges where they existed.
+            emb_present = (~np.isnan(emb_outer)).astype(np.float64)
+            ditch_present = (~np.isnan(ditch_outer)).astype(np.float64)
+
+            emb_at_pts = np.interp(side_s, s_centers, emb_smooth)
+            ditch_at_pts = np.interp(side_s, s_centers, ditch_smooth)
+            emb_present_at_pts = np.interp(side_s, s_centers, emb_present) > 0.3
+            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present) > 0.3
+
+            # --- Relabel ditch first (outer region, emb_outer < x ≤ ditch_outer). ---
+            ditch_new = (
+                ditch_present_at_pts
+                & (side_x > emb_at_pts)
+                & (side_x <= ditch_at_pts)
+            )
+            result[rel_idx[side_idx[ditch_new]]] = self.ditch_label
+
+            # --- Relabel embankment (inner region, x ≤ emb_outer). ---
+            emb_new = emb_present_at_pts & (side_x <= emb_at_pts)
+            result[rel_idx[side_idx[emb_new]]] = self.embankment_label
+
+        return result
 
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
-        with tqdm(
-            desc="Filtering PCD",
-            unit="step",
-            total=3,
-            leave=False,
-            position=1,
-            disable=not self.verbose,
-        ) as pbar:
+        with tqdm(desc="Filtering PCD...", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
             ground_mask = full_labels == self.ground_label
             ground_idx = np.flatnonzero(ground_mask)
-            pbar.update(1)
 
             if ground_idx.size == 0:
                 return full_labels
@@ -1018,14 +1243,17 @@ class GroundSegmenter:
             ground_rail = points[ground_idx].copy()
             ground_rail_labels = full_labels[ground_idx].copy()
 
+            pbar.update(1)
             rail_mask = self._label_rail_points(
                 ground_rail,
                 rail_radius=self.rail_radius,
             )
-            pbar.update(1)
+            pbar.update(2)
 
             if np.count_nonzero(rail_mask) == 0:
                 return full_labels
+
+            ground_rail_labels[rail_mask] = self.embankment_label
 
             # Local normalization for numerical stability.
             ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
@@ -1035,14 +1263,7 @@ class GroundSegmenter:
             rail = ground_rail[rail_mask]
             pbar.update(1)
 
-        with tqdm(
-            desc="Finding centerline",
-            unit="step",
-            total=2,
-            leave=False,
-            position=1,
-            disable=not self.verbose,
-        ) as pbar:
+        with tqdm(desc="Finding centerline", unit="tile", total=2, leave=False, position=1, disable=not self.verbose) as pbar:
             centerline_xy = rail[:, :2]
 
             if centerline_xy.shape[0] == 0:
@@ -1067,7 +1288,7 @@ class GroundSegmenter:
                 centerline=centerline,
                 center_s=center_s,
             )
-            pbar.update(1)
+            pbar.update(2)
 
         for points_chunk_rotated, indices in self.iter_rectangles(
             pcd=ground_rail,
@@ -1183,7 +1404,21 @@ class GroundSegmenter:
             labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
-        return self.ground_smoothing(points, full_labels)
+        # Smooth boundaries if enabled.
+        # rail_mask is passed separately because at this point rail points
+        # already carry embankment_label, not rail_label.
+        if self.smooth:
+            full_labels[ground_idx] = self._smooth_label_boundaries(
+                points=ground_rail,
+                labels=full_labels[ground_idx],
+                rail_mask=rail_mask,
+                centerline=centerline,
+                center_s=center_s,
+            )
+            original_rail_mask = labels[ground_idx] == self.rail_label
+            full_labels[ground_idx[original_rail_mask]] = self.rail_label
+
+        return full_labels
 
 if __name__ == "__main__":
     import laspy
