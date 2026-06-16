@@ -10,6 +10,7 @@ from scipy.interpolate import UnivariateSpline
 from scipy.spatial import cKDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
+from tqdm import tqdm
 
 # from utils.plot_sections import *
 
@@ -851,28 +852,36 @@ class GroundSegmenter:
         s = 0.0
         total = center_s[-1]
 
-        while s < total:
-            s1 = self._best_cut_end(
-                s=s,
-                centerline=centerline,
-                center_s=center_s,
-            )
-
-            idx = np.flatnonzero((point_s >= s) & (point_s < s1))
-
-            if len(idx):
-                yield self._rotated_part(
-                    pcd=pcd,
-                    xy=xy,
-                    z=z,
-                    idx=idx,
+        with tqdm(
+            desc="Tiling",
+            unit="tile",
+            leave=False,
+            position=2,
+            disable=not self.verbose,
+        ) as pbar:
+            while s < total:
+                s1 = self._best_cut_end(
                     s=s,
-                    s1=s1,
                     centerline=centerline,
                     center_s=center_s,
                 )
 
-            s = s1
+                idx = np.flatnonzero((point_s >= s) & (point_s < s1))
+
+                if len(idx):
+                    pbar.update(1)
+                    yield self._rotated_part(
+                        pcd=pcd,
+                        xy=xy,
+                        z=z,
+                        idx=idx,
+                        s=s,
+                        s1=s1,
+                        centerline=centerline,
+                        center_s=center_s,
+                    )
+
+                s = s1
 
     def _build_xz_graph(self, xz: np.ndarray) -> np.ndarray:
         x = xz[:, 0]
@@ -979,52 +988,74 @@ class GroundSegmenter:
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
-        ground_mask = full_labels == self.ground_label
-        ground_idx = np.flatnonzero(ground_mask)
+        with tqdm(
+            desc="Filtering PCD",
+            unit="step",
+            total=3,
+            leave=False,
+            position=2,
+            disable=not self.verbose,
+        ) as pbar:
+            ground_mask = full_labels == self.ground_label
+            ground_idx = np.flatnonzero(ground_mask)
+            pbar.update(1)
 
-        if ground_idx.size == 0:
-            return full_labels
+            if ground_idx.size == 0:
+                return full_labels
 
-        ground_rail = points[ground_idx].copy()
-        ground_rail_labels = full_labels[ground_idx].copy()
+            ground_rail = points[ground_idx].copy()
+            ground_rail_labels = full_labels[ground_idx].copy()
 
-        rail_mask = self._label_rail_points(
-            ground_rail,
-            rail_radius=self.rail_radius,
-        )
+            rail_mask = self._label_rail_points(
+                ground_rail,
+                rail_radius=self.rail_radius,
+            )
+            pbar.update(1)
 
-        if np.count_nonzero(rail_mask) == 0:
-            return full_labels
+            if np.count_nonzero(rail_mask) == 0:
+                return full_labels
 
-        # Local normalization for numerical stability.
-        ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
-        ground_rail[:, 2] -= ground_rail[:, 2].min()
-        ground_rail = ground_rail.astype(np.float32, copy=False)
+            # Local normalization for numerical stability.
+            ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
+            ground_rail[:, 2] -= ground_rail[:, 2].min()
+            ground_rail = ground_rail.astype(np.float32, copy=False)
 
-        rail = ground_rail[rail_mask]
-        centerline_xy = rail[:, :2]
+            rail = ground_rail[rail_mask]
+            pbar.update(1)
 
-        if centerline_xy.shape[0] == 0:
-            return full_labels
+        with tqdm(
+            desc="Finding centerline",
+            unit="step",
+            total=2,
+            leave=False,
+            position=2,
+            disable=not self.verbose,
+        ) as pbar:
+            centerline_xy = rail[:, :2]
 
-        xy = ground_rail[:, :2]
-        z = ground_rail[:, 2]
+            if centerline_xy.shape[0] == 0:
+                return full_labels
 
-        centerline = self._build_centerline(centerline_xy)
+            xy = ground_rail[:, :2]
+            z = ground_rail[:, 2]
 
-        if centerline.shape[0] < 2:
-            return full_labels
+            centerline = self._build_centerline(centerline_xy)
+            pbar.update(1)
 
-        center_s = self._arc_length(centerline)
+            if centerline.shape[0] < 2:
+                return full_labels
 
-        if center_s[-1] <= 0:
-            return full_labels
+            center_s = self._arc_length(centerline)
 
-        point_s = self._assign_points_to_centerline(
-            xy=xy,
-            centerline=centerline,
-            center_s=center_s,
-        )
+            if center_s[-1] <= 0:
+                return full_labels
+
+            point_s = self._assign_points_to_centerline(
+                xy=xy,
+                centerline=centerline,
+                center_s=center_s,
+            )
+            pbar.update(1)
 
         for points_chunk_rotated, indices in self.iter_rectangles(
             pcd=ground_rail,
@@ -1153,6 +1184,8 @@ if __name__ == "__main__":
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
     labels = np.asarray(las_file.classification)
 
+    plot_cloud(points, labels)
+
     cfg_path = pth.Path(__file__).parent / "ground_segm_config.json"
     db_param_path = pth.Path(__file__).parent / "db_params.txt"
 
@@ -1163,3 +1196,4 @@ if __name__ == "__main__":
     )
 
     labels_sectioned = cutter.segment(points, labels)
+    plot_cloud(points, labels_sectioned)

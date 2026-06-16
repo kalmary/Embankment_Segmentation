@@ -5,7 +5,7 @@
   "rail_radius": 1.0,
   "embankment_label": 10,
   "ditch_label": 11,
-  "length_min": 0.5,
+  "length_min": 1.0,
   "length_max": 10.0,
   "width_margin": 0.0,
   "max_curve_ratio": 1.05,
@@ -20,5 +20,6 @@
   "graph_ditch_min_downhill_points": 2,
   "graph_ditch_min_uphill_points": 3,
   "graph_ditch_immediate_points": 3,
-  "graph_ditch_max_flat_points": 5
+  "graph_ditch_max_flat_points": 5,
+  "smoothing": true
 }
