@@ -1132,8 +1132,11 @@ class GroundSegmenter:
              ditch  → emb_outer_smooth < |x| ≤ ditch_outer_smooth
              emb    → |x| ≤ emb_outer_smooth
            (applied only in s-ranges where that label was originally detected)
-        6. Restore rail_label on points that are still embankment (rail is
-           always inside embankment; don't restore rails that drifted to ground).
+        6. If a side's embankment boundary can't be determined at all (e.g. the
+           embankment runs to the edge of the available point cloud in every
+           s-bin, which happens when there is no ground/ditch beyond it), the
+           side is left untouched instead of being wiped to ground — there is
+           nothing to smooth against, but the original labels must not be lost.
 
         Parameters
         ----------
@@ -1201,6 +1204,11 @@ class GroundSegmenter:
             )
 
             if np.all(np.isnan(emb_outer)):
+                # No usable embankment boundary anywhere on this side (e.g. no
+                # ditch/ground exists beyond it, so every bin hit the PCD edge
+                # filter). Nothing to smooth against — keep original labels
+                # rather than leaving them wiped to ground.
+                result[rel_idx[side_idx]] = side_labels
                 continue
 
             # --- Smooth boundary curves. ---
@@ -1434,7 +1442,7 @@ if __name__ == "__main__":
     from utils.plot_cloud import plot_cloud
 
     las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_rln.laz"
+        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/ITWL_Grajewo20_mini_rln.laz"
     )
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
