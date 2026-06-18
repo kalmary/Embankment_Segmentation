@@ -1,120 +1,127 @@
-![Banner](/src/img/Banner.png)
+# Ground Segmentation
 
-# Table of contents
-1. [Overview](#overview)
-2. [Repository Structure](#fstructure)
-3. [Installation](#installation)
-4. [Usage](#usage)
+## Overview
 
-# 1. Overview <a name="overview"></a>
-This repository provides a pipeline for segmentation of railway embankments from LiDAR point cloud data (.laz files). It covers the full workflow from raw data ingestion and rail geometry retrieval to embankment mask generation and parameter optimization.
+This repository contains a ground-profile segmentation workflow for railway LiDAR point clouds. The documented workflow uses `src/SegmentGround.py` as the segmentation entry point.
 
-The pipeline is built around the SegmentEmbankment class, which performs 2D raster-based region growing from rail centerlines outward onto surrounding terrain. Rail geometry is fetched automatically from a PostGIS database and used to seed the segmentation. The algorithm operates on ground and rail point classes only, ignoring vegetation, buildings, and other objects. Segmentation parameters are controlled through a JSON configuration file and can be tuned to match varying terrain conditions such as high embankments, shallow slopes, or dense urban surroundings.
+`GroundSegmenter` uses point coordinates, existing LAS classification labels, and rail geometry. It finds rail-adjacent points, builds a local rail centerline, cuts the point cloud into cross-sections, and classifies nearby terrain into ground, rail, embankment, and ditch labels.
 
-# 2. Repository structure: <a name="fstructure"></a>
+The segmentation is configured with `src/ground_segm_config.json`.
 
-```
+## Repository Structure
+
+```text
 .
 ├── src
-│   ├── utils
-│   │   ├── pcd_tools.py                        #Point cloud preprocessing utilities: statistical outlier removal and vectorized voxel subsampling
-│   │   └── plot_cloud.py                       #3D point cloud visualization
-|   ├── embankment_config.json                  #Segmentation hyperparameters controlling rail detection radius, terrain slope thresholds, morphological
-|   ├── db_params.txt                           #PostGIS connection parameters (dbname, host, port, user, password) for fetching rail geometry
-│   └── Segment_embankment.py                   #Railway embankment segmentation from LiDAR point clouds using 2D raster-based region growing seeded from PostGIS rail geometry
-
-
+│   ├── SegmentGround.py              # Ground, embankment, and ditch segmentation
+│   ├── ground_segm_config.json       # Ground segmentation parameters
+│   └── utils
+│       ├── pcd_tools.py              # Point cloud preprocessing helpers
+│       ├── plot_cloud.py             # Point cloud visualization
+│       └── plot_sections.py          # Section visualization helpers
+├── requirements.txt
+└── README.md
 ```
----
-# 3. Installation: <a name="installation"></a>
 
-Clone the repository to your local machine:
+## Installation
+
 ```bash
-
 git clone https://github.com/kalmary/Embankment_Segmentation.git
+cd Embankment_Segmentation
 
-cd Embankment_segmentation
-```
-
-Create and activate a Virtual Environment and install requirements:
-```bash
-uv venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-
-uv pip install -r requirements.txt
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-# 4. Usage <a name="usage"></a>
-
-Segmentation is used as a Python class. Load your point cloud however you prefer, 
-then instantiate `SegmentEmbankment` and call `segment()` on your data.
+## Usage
 
 ```python
-from segment import SegmentEmbankment, PCD
+import laspy
 import numpy as np
 
-segmenter = SegmentEmbankment.from_config(
-    cfg_path="embankment_config.json",
-    db_param_path="db_params.txt",
+from src.SegmentGround import GroundSegmenter
+
+las = laspy.read("input.laz")
+points = np.column_stack((las.x, las.y, las.z))
+labels = np.asarray(las.classification)
+
+segmenter = GroundSegmenter.from_config(
+    cfg_path="src/ground_segm_config.json",
+    verbose=True,
 )
 
-# Load your own point cloud — xyz: (N, 3) float array, labels: (N,) int array
-data = PCD(points=xyz, labels=labels)
-
-# Points classified as embankment receive label 10
-result_labels = segmenter.segment(data)
+result_labels = segmenter.segment(points, labels)
 ```
 
-For configuration details see the [Configuration](#configuration) section below.
-Script for segmentation of railway embankments from LiDAR point clouds. The `SegmentEmbankment` 
-class performs 2D raster-based region growing seeded from rail geometry fetched automatically 
-from a PostGIS database. To do so run:
+`segment()` returns a copy of the input labels with terrain classes updated. It only processes points whose labels match `ground_label` or `rail_label` from the config. Other input labels are preserved.
 
----
+Default output labels:
+
+| Label | Meaning |
+|---|---|
+| `1` | Ground |
+| `0` | Rail |
+| `10` | Embankment |
+| `11` | Ditch |
 
 ## Configuration
 
-Segmentation behaviour is controlled through `embankment_config.json`. We recommend starting 
-with the default values below, which were tuned on our dataset. If results are unsatisfactory 
-for your data, refer to the parameter descriptions and adjust accordingly.
+Default `src/ground_segm_config.json`:
 
 ```json
 {
-    "voxel_size": 0.10,
-    "rail_radius": 0.50,
-    "grid_cell_size": 0.50,
-    "max_dist_m": 10.0,
-    "crown_width_m": 3.0,
-    "min_slope": 0.05,
-    "max_slope": 5.5,
-    "min_global_slope": 0.05,
-    "max_embankment_height": 6.0,
-    "max_elev_diff": 0.20,
-    "closing_radius": 1,
-    "min_cluster_size": 50,
-    "overlap": 10.0,
-    "tile_size": 500.0,
-    "ground_label": 2,
-    "rail_label": 11
+  "distance_limit": 12.0,
+  "ground_label": 1,
+  "rail_label": 0,
+  "rail_radius": 1.0,
+  "embankment_label": 10,
+  "ditch_label": 11,
+  "length_min": 1.0,
+  "length_max": 10.0,
+  "width_margin": 0.0,
+  "max_curve_ratio": 1.05,
+  "curve_resolution": 0.25,
+  "graph_x_bin": 0.25,
+  "graph_uphill_slope": 0.15,
+  "graph_min_uphill_points": 3,
+  "graph_min_embankment_points": 8,
+  "graph_noise_points": 2,
+  "graph_smooth_window": 3,
+  "graph_max_gap_bins": 1.0,
+  "graph_ditch_min_downhill_points": 2,
+  "graph_ditch_min_uphill_points": 3,
+  "graph_ditch_immediate_points": 3,
+  "graph_ditch_max_flat_points": 5,
+  "smoothing": true,
+  "smooth_level": 5
 }
 ```
 
 | Parameter | Description |
 |---|---|
-| `voxel_size` | Voxel size for input point cloud subsampling. Smaller values preserve more detail but increase processing time. |
-| `rail_radius` | Points within this distance from the rail centerline are labelled as rail and used to seed the embankment growth. |
-| `grid_cell_size` | Cell size of the 2D raster grid used for segmentation. Smaller values give finer boundaries but use more memory. |
-| `max_dist_m` | Maximum growth radius from the rail. Embankment cannot extend beyond this distance regardless of terrain shape. |
-| `crown_width_m` | Width of the flat track crown included unconditionally — slope checks are skipped in this zone. |
-| `min_slope` | Minimum local terrain slope to qualify as an embankment slope. Increase to exclude flat surrounding ground. |
-| `max_slope` | Maximum local terrain slope. Points steeper than this (walls, dense vegetation) are excluded. |
-| `min_global_slope` | Minimum global descent rate from the rail. Prevents the mask from spreading onto flat terrain that is reachable through a slope. |
-| `max_embankment_height` | Maximum depth below the rail level. Points deeper than this are excluded — limits downward growth into cuttings. |
-| `max_elev_diff` | Maximum height above the rail level. Points higher than this are excluded. |
-| `closing_radius` | Radius of the morphological closing operation applied to the mask. Larger values fill bigger gaps and smooth edges. |
-| `min_cluster_size` | Connected components smaller than this are removed as noise after morphological refinement. |
-| `overlap` | Tile overlap used in tiled processing mode. Prevents boundary artefacts between adjacent tiles. |
-| `tile_size` | Tile size for large point clouds processed in tiled mode. |
-| `ground_label` | LAS classification code for ground points in your input data. |
-| `rail_label` | LAS classification code for rail points in your input data. |
-
+| `distance_limit` | Maximum lateral distance from the rail considered during nearest-point selection. |
+| `ground_label` | Input and output label for ground points. |
+| `rail_label` | Input and output label for rail points. |
+| `rail_radius` | Distance from rail geometry used to detect rail-adjacent points. |
+| `embankment_label` | Output label assigned to embankment points. |
+| `ditch_label` | Output label assigned to ditch points. |
+| `length_min` | Minimum centerline section length used for local cross-section analysis. |
+| `length_max` | Maximum centerline section length used for local cross-section analysis. |
+| `width_margin` | Extra cross-section width retained after rotating a local section. |
+| `max_curve_ratio` | Maximum allowed arc-to-chord ratio before a section is shortened around a curve. |
+| `curve_resolution` | Sampling resolution for rail centerline construction and curvature checks. |
+| `graph_x_bin` | Bin size for building the X-Z terrain profile in each cross-section. |
+| `graph_uphill_slope` | Minimum positive gradient treated as uphill terrain. |
+| `graph_min_uphill_points` | Minimum consecutive uphill bins required for slope detection. |
+| `graph_min_embankment_points` | Minimum bins required before accepting an embankment interval. |
+| `graph_noise_points` | Number of noisy bins tolerated while splitting profile sections. |
+| `graph_smooth_window` | Window size used to smooth the X-Z profile before gradient checks. |
+| `graph_max_gap_bins` | Maximum gap allowed between related profile regions. |
+| `graph_ditch_min_downhill_points` | Minimum consecutive downhill bins for ditch detection. |
+| `graph_ditch_min_uphill_points` | Minimum consecutive uphill bins for ditch detection. |
+| `graph_ditch_immediate_points` | Number of bins after embankment where an immediate ditch may begin. |
+| `graph_ditch_max_flat_points` | Maximum flat/noisy bins allowed between ditch sides. |
+| `smoothing` | Present in the default config. Boundary smoothing is enabled by default in `GroundSegmenter`; use `smooth` if this needs to be controlled from config. |
+| `smooth_level` | Boundary smoothing level in meters along the centerline. |
