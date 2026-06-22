@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib as pth
 from typing import Union
 
@@ -14,6 +15,9 @@ from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
 
 # from utils.plot_sections import *
+
+
+logger = logging.getLogger(__name__)
 
 
 class GroundSegmenter:
@@ -106,22 +110,26 @@ class GroundSegmenter:
         return params
 
     def __load_tracks_from_db(self, bbox):
-        conn = psycopg2.connect(**self.__db_param)
+        try:
+            conn = psycopg2.connect(**self.__db_param)
 
-        xmin, ymin, xmax, ymax = bbox
-        query = """
-            SELECT ST_AsText(wspolrzedne_utm)
-            FROM data.tory
-            WHERE ST_Intersects(
-                wspolrzedne_utm,
-                ST_MakeEnvelope(%s, %s, %s, %s, ST_SRID(wspolrzedne_utm))
-            );
-        """
+            xmin, ymin, xmax, ymax = bbox
+            query = """
+                SELECT ST_AsText(wspolrzedne_utm)
+                FROM data.tory
+                WHERE ST_Intersects(
+                    wspolrzedne_utm,
+                    ST_MakeEnvelope(%s, %s, %s, %s, ST_SRID(wspolrzedne_utm))
+                );
+            """
 
-        cur = conn.cursor()
-        cur.execute(query, (xmin, ymin, xmax, ymax))
-        rows = cur.fetchall()
-        conn.close()
+            cur = conn.cursor()
+            cur.execute(query, (xmin, ymin, xmax, ymax))
+            rows = cur.fetchall()
+            conn.close()
+        except psycopg2.Error:
+            logger.exception("Failed to retrieve rail tracks from the database for bbox %s", bbox)
+            raise
 
         lines = []
         for (wkt_line,) in rows:
@@ -1073,6 +1081,45 @@ class GroundSegmenter:
         return boundary
 
     @staticmethod
+    def _inner_boundary_curve(
+        s: np.ndarray,
+        x_abs: np.ndarray,
+        labels: np.ndarray,
+        target_label: int,
+        s_bin_centers: np.ndarray,
+        s_bin_size: float,
+    ) -> np.ndarray:
+        """
+        For each s-bin, find the innermost (min |x|) boundary of target_label.
+
+        This is the true start of a label's own footprint, independent of
+        whatever sits between it and the rail. Used so the ditch's inner edge
+        is not forced to coincide with the embankment's outer edge — the two
+        are tracked separately so a real ground/rest gap between embankment
+        and ditch survives smoothing instead of being swallowed into ditch.
+
+        Returns array of shape (n_bins,) with NaN where the label is absent.
+        """
+        n = len(s_bin_centers)
+        boundary = np.full(n, np.nan)
+
+        s_lo = s_bin_centers[0] - 0.5 * s_bin_size
+        bin_idx = np.clip(
+            np.floor((s - s_lo) / s_bin_size).astype(np.int64),
+            0, n - 1,
+        )
+
+        for b in range(n):
+            target_in_bin = (bin_idx == b) & (labels == target_label)
+
+            if not np.any(target_in_bin):
+                continue
+
+            boundary[b] = x_abs[target_in_bin].min()
+
+        return boundary
+
+    @staticmethod
     def _smooth_boundary(
         s_centers: np.ndarray,
         boundary: np.ndarray,
@@ -1126,12 +1173,18 @@ class GroundSegmenter:
         2. Reset every relevant point to ground_label (clean slate).
         3. For each side (left/right), extract the outer boundary curve for
            embankment and ditch using _outer_boundary_curve (same function,
-           different target_label).
-        4. Smooth both curves with Gaussian sigma = self.smooth_level [metres].
+           different target_label), and the ditch's own inner boundary using
+           _inner_boundary_curve.
+        4. Smooth all three curves with Gaussian sigma = self.smooth_level
+           [metres].
         5. Relabel:
-             ditch  → emb_outer_smooth < |x| ≤ ditch_outer_smooth
+             ditch  → ditch_inner_smooth < |x| ≤ ditch_outer_smooth
              emb    → |x| ≤ emb_outer_smooth
            (applied only in s-ranges where that label was originally detected)
+           The ditch's inner edge is tracked on its own rather than reused from
+           the embankment's outer edge, so a real ground/rest gap between
+           embankment and ditch is preserved as ground instead of being
+           absorbed into the ditch.
         6. If a side's embankment boundary can't be determined at all (e.g. the
            embankment runs to the edge of the available point cloud in every
            s-bin, which happens when there is no ground/ditch beyond it), the
@@ -1203,6 +1256,17 @@ class GroundSegmenter:
                 pcd_edge_margin=pcd_edge_margin,
             )
 
+            # Ditch's own inner edge, tracked independently of embankment's
+            # outer edge so a real rest/ground gap between the two survives.
+            ditch_inner = self._inner_boundary_curve(
+                s=side_s,
+                x_abs=side_x,
+                labels=side_labels,
+                target_label=self.ditch_label,
+                s_bin_centers=s_centers,
+                s_bin_size=s_bin_size,
+            )
+
             if np.all(np.isnan(emb_outer)):
                 # No usable embankment boundary anywhere on this side (e.g. no
                 # ditch/ground exists beyond it, so every bin hit the PCD edge
@@ -1214,20 +1278,28 @@ class GroundSegmenter:
             # --- Smooth boundary curves. ---
             emb_smooth = self._smooth_boundary(s_centers, emb_outer, self.smooth_level)
             ditch_smooth = self._smooth_boundary(s_centers, ditch_outer, self.smooth_level)
+            ditch_inner_smooth = self._smooth_boundary(s_centers, ditch_inner, self.smooth_level)
 
             # Presence flags: only apply labels in s-ranges where they existed.
             emb_present = (~np.isnan(emb_outer)).astype(np.float64)
             ditch_present = (~np.isnan(ditch_outer)).astype(np.float64)
 
+            # Gaussian-smooth presence too (same sigma), not just linear interp.
+            # Otherwise single-bin on/off flicker in raw ditch detection produces
+            # a sawtooth presence mask instead of a smooth ramp.
+            emb_present_smooth = self._smooth_boundary(s_centers, emb_present, self.smooth_level)
+            ditch_present_smooth = self._smooth_boundary(s_centers, ditch_present, self.smooth_level)
+
             emb_at_pts = np.interp(side_s, s_centers, emb_smooth)
             ditch_at_pts = np.interp(side_s, s_centers, ditch_smooth)
-            emb_present_at_pts = np.interp(side_s, s_centers, emb_present) > 0.3
-            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present) > 0.3
+            ditch_inner_at_pts = np.interp(side_s, s_centers, ditch_inner_smooth)
+            emb_present_at_pts = np.interp(side_s, s_centers, emb_present_smooth) > 0.3
+            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present_smooth) > 0.3
 
-            # --- Relabel ditch first (outer region, emb_outer < x ≤ ditch_outer). ---
+            # --- Relabel ditch first (its own span, ditch_inner < x ≤ ditch_outer). ---
             ditch_new = (
                 ditch_present_at_pts
-                & (side_x > emb_at_pts)
+                & (side_x > ditch_inner_at_pts)
                 & (side_x <= ditch_at_pts)
             )
             result[rel_idx[side_idx[ditch_new]]] = self.ditch_label
@@ -1442,7 +1514,7 @@ if __name__ == "__main__":
     from utils.plot_cloud import plot_cloud
 
     las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/ITWL_Grajewo20_mini_rln.laz"
+        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_rln.laz"
     )
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
