@@ -1293,8 +1293,13 @@ class GroundSegmenter:
             emb_at_pts = np.interp(side_s, s_centers, emb_smooth)
             ditch_at_pts = np.interp(side_s, s_centers, ditch_smooth)
             ditch_inner_at_pts = np.interp(side_s, s_centers, ditch_inner_smooth)
+<<<<<<< HEAD
             emb_present_at_pts = np.interp(side_s, s_centers, emb_present_smooth) > 0.3
             ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present_smooth) > 0.3
+=======
+            emb_present_at_pts = np.interp(side_s, s_centers, emb_present) > 0.3
+            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present) > 0.3
+>>>>>>> 9150093d2d4a757b6555814df0cecff6e85ce188
 
             # --- Relabel ditch first (its own span, ditch_inner < x ≤ ditch_outer). ---
             ditch_new = (
