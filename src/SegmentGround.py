@@ -1276,11 +1276,17 @@ class GroundSegmenter:
             emb_present = (~np.isnan(emb_outer)).astype(np.float64)
             ditch_present = (~np.isnan(ditch_outer)).astype(np.float64)
 
+            # Gaussian-smooth presence too (same sigma), not just linear interp.
+            # Otherwise single-bin on/off flicker in raw ditch detection produces
+            # a sawtooth presence mask instead of a smooth ramp.
+            emb_present_smooth = self._smooth_boundary(s_centers, emb_present, self.smooth_level)
+            ditch_present_smooth = self._smooth_boundary(s_centers, ditch_present, self.smooth_level)
+
             emb_at_pts = np.interp(side_s, s_centers, emb_smooth)
             ditch_at_pts = np.interp(side_s, s_centers, ditch_smooth)
             ditch_inner_at_pts = np.interp(side_s, s_centers, ditch_inner_smooth)
-            emb_present_at_pts = np.interp(side_s, s_centers, emb_present) > 0.3
-            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present) > 0.3
+            emb_present_at_pts = np.interp(side_s, s_centers, emb_present_smooth) > 0.3
+            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present_smooth) > 0.3
 
             # --- Relabel ditch first (its own span, ditch_inner < x ≤ ditch_outer). ---
             ditch_new = (
@@ -1500,7 +1506,7 @@ if __name__ == "__main__":
     from utils.plot_cloud import plot_cloud
 
     las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/ITWL_Grajewo20_mini_rln.laz"
+        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_rln.laz"
     )
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
