@@ -1,21 +1,79 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import pyvista as pv
 
-def plot_xz_graph_split_by_gap(
-    xz: np.ndarray,
-    graph: np.ndarray,
-    graph_parts: list[np.ndarray],
-    left_graph: np.ndarray | None,
-    right_graph: np.ndarray | None,
+
+def plot_xyz_cloud(
+    points: np.ndarray,
+    labels: np.ndarray | None = None,
     point_size: float = 1.0,
 ):
-    """
-    Visualize how the graph is split into components by X-axis gaps,
-    and which two components are picked as left/right sides.
-    """
+    points = np.asarray(points)
+
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"points must have shape (N, 3), got {points.shape}")
+
+    if labels is not None and len(labels) != len(points):
+        raise ValueError(
+            f"labels must have the same length as points: {len(labels)} != {len(points)}"
+        )
+
+    cloud = pv.PolyData(points)
+    plotter = pv.Plotter(notebook=False, off_screen=False)
+
+    if labels is None:
+        plotter.add_mesh(cloud, color="green", point_size=point_size)
+    else:
+        cloud["label"] = labels
+        plotter.add_mesh(
+            cloud,
+            scalars="label",
+            cmap="tab20",
+            point_size=point_size,
+        )
+
+    plotter.add_axes(xlabel="X", ylabel="Y", zlabel="Z")
+    plotter.reset_camera()
+    plotter.show()
+
+
+def plot_centerline(centerline: np.ndarray):
+    centerline = np.asarray(centerline)
+
+    if centerline.ndim != 2 or centerline.shape[1] != 2:
+        raise ValueError(
+            f"centerline must have shape (N, 2), got {centerline.shape}"
+        )
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(centerline[:, 0], centerline[:, 1], linewidth=2, label="centerline")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_title("Centerline")
+    ax.axis("equal")
+    ax.grid(True)
+    ax.legend()
+
+    plt.show()
+
+
+def plot_xz_graph_split_by_rail(
+    xz: np.ndarray,
+    graph: np.ndarray,
+    graph_labels: np.ndarray,
+    left_graph: np.ndarray | None,
+    right_graph: np.ndarray | None,
+    rail_label: int = 0,
+    point_size: float = 1.0,
+):
+    if len(graph_labels) != len(graph):
+        raise ValueError(
+            f"graph_labels must have the same length as graph: "
+            f"{len(graph_labels)} != {len(graph)}"
+        )
+
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    # Plot all XZ points
     ax.scatter(
         xz[:, 0],
         xz[:, 1],
@@ -25,7 +83,6 @@ def plot_xz_graph_split_by_gap(
         label="XZ points",
     )
 
-    # Plot full graph
     ax.plot(
         graph[:, 0],
         graph[:, 1],
@@ -33,30 +90,27 @@ def plot_xz_graph_split_by_gap(
         color="gray",
         linestyle="--",
         alpha=0.5,
-        label="full graph (before split)",
+        label="full graph",
     )
 
-    # Plot all components with different colors
-    colors = plt.cm.Set3(np.linspace(0, 1, len(graph_parts)))
-    for i, part in enumerate(graph_parts):
-        ax.plot(
-            part[:, 0],
-            part[:, 1],
-            linewidth=2,
-            marker=".",
-            color=colors[i],
-            alpha=0.6,
-            label=f"component {i+1}",
-        )
+    rail_mask = graph_labels == rail_label
+    ax.scatter(
+        graph[rail_mask, 0],
+        graph[rail_mask, 1],
+        s=30,
+        color="black",
+        marker="x",
+        label="rail bins",
+        zorder=10,
+    )
 
-    # Highlight picked left/right sides
     if left_graph is not None and len(left_graph):
         ax.plot(
             left_graph[:, 0],
             left_graph[:, 1],
             linewidth=3,
             color="blue",
-            label="LEFT (picked)",
+            label="left side",
             zorder=10,
         )
 
@@ -66,14 +120,14 @@ def plot_xz_graph_split_by_gap(
             right_graph[:, 1],
             linewidth=3,
             color="red",
-            label="RIGHT (picked)",
+            label="right side",
             zorder=10,
         )
 
     ax.axvline(0.0, linewidth=1, color="black", linestyle=":")
     ax.set_xlabel("X")
     ax.set_ylabel("Z")
-    ax.set_title("XZ Graph Split by X-gap: All Components & Picked Sides")
+    ax.set_title("XZ graph split by rail bins")
     ax.axis("equal")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best")

@@ -98,6 +98,7 @@ def plot_cloud(
     point_size: int = 3,
     render_points_as_spheres: bool = False,
     verbose: bool = False,
+    title: Optional[str] = None,
 ):
     points = np.asarray(points)
     labels = np.asarray(labels) if labels is not None else None
@@ -112,6 +113,10 @@ def plot_cloud(
         raise ValueError(f"buffer_size must be positive, got {buffer_size}")
 
     plotter = pv.Plotter(notebook=False, off_screen=False)
+
+    if title is not None:
+        plotter.add_text(title, position="upper_left", font_size=12)
+
     origin = points.mean(axis=0)
     if verbose:
         print(f"Plot origin subtracted before float32 conversion: {origin}")

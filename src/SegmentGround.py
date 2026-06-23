@@ -48,37 +48,119 @@ class GroundSegmenter:
 
         self.graph_x_bin = float(cfg["graph_x_bin"])
         self.graph_uphill_slope = float(cfg["graph_uphill_slope"])
-        self.graph_min_uphill_points = int(cfg["graph_min_uphill_points"])
-        self.graph_min_embankment_points = int(
-            cfg.get("graph_min_embankment_points", self.graph_min_uphill_points)
+
+        # Convert configured distances to graph samples.
+        if "graph_embankment_min_stop_m" in cfg:
+            graph_embankment_min_stop_m = float(cfg["graph_embankment_min_stop_m"])
+        elif "graph_min_uphill_m" in cfg:
+            graph_embankment_min_stop_m = float(cfg["graph_min_uphill_m"])
+        else:
+            graph_embankment_min_stop_m = self._read_graph_distance_m(
+                cfg,
+                meter_key="graph_embankment_min_stop_m",
+                legacy_points_key="graph_min_uphill_points",
+            )
+
+        self.graph_embankment_min_stop_points = self._graph_meters_to_points(
+            graph_embankment_min_stop_m,
+            minimum_points=1,
         )
+
+        graph_min_embankment_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_min_embankment_m",
+            legacy_points_key="graph_min_embankment_points",
+            default_m=graph_embankment_min_stop_m,
+        )
+        self.graph_min_embankment_points = self._graph_meters_to_points(
+            graph_min_embankment_m,
+            minimum_points=1,
+        )
+
         self.graph_noise_points = int(cfg["graph_noise_points"])
         self.graph_smooth_window = int(cfg["graph_smooth_window"])
         self.graph_max_gap_bins = float(cfg["graph_max_gap_bins"])
 
-        # Ditch detection is deliberately separate from embankment detection.
-        # Embankment may stop at a flat bottom; ditch may start immediately
-        # with uphill, or later with a downhill->uphill valley pattern.
-        self.graph_ditch_min_downhill_points = int(
-            cfg.get("graph_ditch_min_downhill_points", self.graph_min_uphill_points)
+        # Ditch thresholds are separate from embankment thresholds.
+        graph_ditch_min_downhill_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_ditch_min_downhill_m",
+            legacy_points_key="graph_ditch_min_downhill_points",
+            default_m=graph_embankment_min_stop_m,
         )
-        self.graph_ditch_min_uphill_points = int(
-            cfg.get("graph_ditch_min_uphill_points", self.graph_min_uphill_points)
-        )
-        self.graph_ditch_immediate_points = int(
-            cfg.get("graph_ditch_immediate_points", self.graph_noise_points + 1)
-        )
-        self.graph_ditch_max_flat_points = int(
-            cfg.get("graph_ditch_max_flat_points", self.graph_noise_points + 2)
+        self.graph_ditch_min_downhill_points = self._graph_meters_to_points(
+            graph_ditch_min_downhill_m,
+            minimum_points=1,
         )
 
-        # Boundary smoothing along the centerline.
-        # smooth_level is the Gaussian sigma in arc-length meters.
+        graph_ditch_min_uphill_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_ditch_min_uphill_m",
+            legacy_points_key="graph_ditch_min_uphill_points",
+            default_m=graph_embankment_min_stop_m,
+        )
+        self.graph_ditch_min_uphill_points = self._graph_meters_to_points(
+            graph_ditch_min_uphill_m,
+            minimum_points=1,
+        )
+
+        graph_ditch_immediate_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_ditch_immediate_points_m",
+            legacy_points_key="graph_ditch_immediate_points",
+            default_m=(self.graph_noise_points + 1) * self.graph_x_bin,
+        )
+        self.graph_ditch_immediate_points = self._graph_meters_to_points(
+            graph_ditch_immediate_m,
+            minimum_points=0,
+        )
+
+        graph_ditch_max_flat_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_ditch_max_flat_m",
+            legacy_points_key="graph_ditch_max_flat_points",
+            default_m=(self.graph_noise_points + 2) * self.graph_x_bin,
+        )
+        self.graph_ditch_max_flat_points = self._graph_meters_to_points(
+            graph_ditch_max_flat_m,
+            minimum_points=0,
+        )
+
+        graph_ditch_max_uphill_m = self._read_graph_distance_m(
+            cfg,
+            meter_key="graph_ditch_max_uphill_m",
+            legacy_points_key="graph_ditch_max_uphill_points",
+            default_m=self.distance_limit,
+        )
+        self.graph_ditch_max_uphill_points = self._graph_meters_to_points(
+            graph_ditch_max_uphill_m,
+            minimum_points=self.graph_ditch_min_uphill_points,
+        )
+
+        # Ditch search range, measured outward from the rail.
+        self.graph_ditch_search_min_m = float(
+            cfg.get("graph_ditch_search_min_m", 0.0)
+        )
+        self.graph_ditch_search_max_m = float(
+            cfg.get("graph_ditch_search_max_m", self.distance_limit)
+        )
+
+        if self.graph_ditch_search_min_m < 0.0:
+            raise ValueError("graph_ditch_search_min_m must be non-negative.")
+
+        if self.graph_ditch_search_max_m < self.graph_ditch_search_min_m:
+            raise ValueError(
+                "graph_ditch_search_max_m must be >= graph_ditch_search_min_m."
+            )
+
+        # Gaussian smoothing distance along the centerline, in metres.
         self.smooth = bool(cfg.get("smooth", True))
         self.smooth_level = float(cfg.get("smooth_level", 10.0))
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)
+
+        self.label_tmp = 100
 
     @classmethod
     def from_config(
@@ -92,6 +174,43 @@ class GroundSegmenter:
             cfg = json.load(f)
 
         return cls(cfg=cfg, db_param_path=db_param_path, verbose=verbose)
+
+    def _read_graph_distance_m(
+        self,
+        cfg: dict,
+        meter_key: str,
+        legacy_points_key: str,
+        default_m: float | None = None,
+    ) -> float:
+        if meter_key in cfg:
+            return float(cfg[meter_key])
+
+        if legacy_points_key in cfg:
+            return float(cfg[legacy_points_key]) * self.graph_x_bin
+
+        if default_m is not None:
+            return float(default_m)
+
+        raise KeyError(meter_key)
+
+    def _graph_meters_to_points(
+        self,
+        value_m: float,
+        minimum_points: int,
+    ) -> int:
+        if self.graph_x_bin <= 0.0:
+            raise ValueError("graph_x_bin must be positive.")
+
+        if value_m < 0.0:
+            raise ValueError("Graph distance thresholds must be non-negative.")
+
+        return max(minimum_points, int(np.ceil(value_m / self.graph_x_bin)))
+
+    def _drop_tmp_labels(self, labels: np.ndarray) -> np.ndarray:
+        """Replace temporary splitter labels with embankment labels."""
+        out = labels.copy()
+        out[out == self.label_tmp] = self.embankment_label
+        return out
 
     @staticmethod
     def _load_db_params(path: Union[str, pth.Path]):
@@ -522,6 +641,16 @@ class GroundSegmenter:
         return i
 
     @staticmethod
+    def _capped_uphill_end(
+        uphill_mask: np.ndarray,
+        uphill_start: int,
+        uphill_end: int,
+        max_uphill_points: int,
+    ) -> int:
+        end = GroundSegmenter._end_run(uphill_mask, uphill_end)
+        return min(end, uphill_start + max_uphill_points)
+
+    @staticmethod
     def _find_ditch_interval(
         emb_end: int,
         uphill_mask: np.ndarray,
@@ -530,76 +659,101 @@ class GroundSegmenter:
         min_uphill_points: int,
         immediate_points: int,
         max_flat_points: int,
-    ) -> tuple[int, int] | None:
+        max_uphill_points: int,
+        search_start: int,
+        search_stop: int,
+    ) -> tuple[int, int, bool] | None:
         n = len(uphill_mask)
 
-        if emb_end >= n:
+        search_start = max(0, min(int(search_start), n))
+        search_stop = max(search_start, min(int(search_stop), n))
+
+        if search_start >= search_stop:
             return None
 
-        # Case 1: embankment already reached the ditch bottom.
-        # Then ditch starts directly after embankment and is represented
-        # by the stable uphill wall.
-        immediate_stop = min(n, emb_end + immediate_points + min_uphill_points)
-        immediate = GroundSegmenter._first_run(
-            mask=uphill_mask,
-            start=emb_end,
-            stop=immediate_stop,
-            min_points=min_uphill_points,
-        )
+        # Search only within the configured interval.
+        immediate_start = max(emb_end, search_start)
 
-        if immediate is not None:
-            uphill_start, uphill_end = immediate
+        # Case 1: uphill starts immediately after the embankment.
+        if immediate_start < search_stop:
+            immediate_stop = min(
+                search_stop,
+                immediate_start + immediate_points + min_uphill_points,
+            )
+            immediate = GroundSegmenter._first_run(
+                mask=uphill_mask,
+                start=immediate_start,
+                stop=immediate_stop,
+                min_points=min_uphill_points,
+            )
 
-            # Include a short flat/noisy transition before uphill as ditch bottom,
-            # but keep ditch attached to embankment.
-            if uphill_start - emb_end <= immediate_points:
-                return emb_end, GroundSegmenter._end_run(uphill_mask, uphill_end)
+            if immediate is not None:
+                uphill_start, uphill_end = immediate
 
-        # Case 2: a ditch appears later. In this version, if a later ditch is
-        # found, embankment will be extended up to the ditch start by the caller.
-        # Therefore the final topology remains:
-        #     embankment -> ditch -> rest
-        # not:
-        #     embankment -> rest -> ditch -> rest
-        i = emb_end
+                # Include the bottom before the uphill wall.
+                if uphill_start - immediate_start <= immediate_points:
+                    ditch_start = max(search_start, uphill_start - immediate_points)
+                    return ditch_start, min(
+                        search_stop,
+                        GroundSegmenter._capped_uphill_end(
+                            uphill_mask=uphill_mask,
+                            uphill_start=uphill_start,
+                            uphill_end=uphill_end,
+                            max_uphill_points=max_uphill_points,
+                        ),
+                    ), True
 
-        while i < n:
+        # Case 2: find a ditch elsewhere in the search range.
+        i = search_start
+
+        while i < search_stop:
             uphill = GroundSegmenter._first_run(
                 mask=uphill_mask,
                 start=i,
-                stop=n,
+                stop=search_stop,
                 min_points=min_uphill_points,
             )
             downhill = GroundSegmenter._first_run(
                 mask=downhill_mask,
                 start=i,
-                stop=n,
+                stop=search_stop,
                 min_points=min_downhill_points,
             )
 
             if uphill is None and downhill is None:
                 return None
 
-            # Uphill-only candidate. This covers a ditch whose downhill side was
-            # already consumed by embankment/flat bottom detection.
+            # An uphill-only ditch candidate.
             uphill_candidate = None
             if uphill is not None:
                 uphill_start, uphill_end = uphill
                 uphill_candidate = (
                     uphill_start,
-                    GroundSegmenter._end_run(uphill_mask, uphill_end),
+                    min(
+                        search_stop,
+                        GroundSegmenter._capped_uphill_end(
+                            uphill_mask=uphill_mask,
+                            uphill_start=uphill_start,
+                            uphill_end=uphill_end,
+                            max_uphill_points=max_uphill_points,
+                        ),
+                    ),
+                    False,
                 )
 
-            # Downhill -> optional flat/noisy bottom -> uphill candidate.
+            # Downhill, optional flat bottom, then uphill.
             downhill_candidate = None
             if downhill is not None:
                 downhill_start, downhill_end = downhill
                 j = downhill_end
 
-                while j < n and downhill_mask[j]:
+                while j < search_stop and downhill_mask[j]:
                     j += 1
 
-                flat_stop = min(n, j + max_flat_points + min_uphill_points)
+                flat_stop = min(
+                    search_stop,
+                    j + max_flat_points + min_uphill_points,
+                )
                 uphill_after = GroundSegmenter._first_run(
                     mask=uphill_mask,
                     start=j,
@@ -608,10 +762,19 @@ class GroundSegmenter:
                 )
 
                 if uphill_after is not None:
-                    _, uphill_end = uphill_after
+                    uphill_start, uphill_end = uphill_after
                     downhill_candidate = (
                         downhill_start,
-                        GroundSegmenter._end_run(uphill_mask, uphill_end),
+                        min(
+                            search_stop,
+                            GroundSegmenter._capped_uphill_end(
+                                uphill_mask=uphill_mask,
+                                uphill_start=uphill_start,
+                                uphill_end=uphill_end,
+                                max_uphill_points=max_uphill_points,
+                            ),
+                        ),
+                        False,
                     )
 
             candidates = [
@@ -623,8 +786,7 @@ class GroundSegmenter:
             if candidates:
                 return min(candidates, key=lambda item: item[0])
 
-            # The first downhill was not followed by uphill quickly enough.
-            # Continue after it and look for the next possible structure.
+            # Try after this downhill run.
             if downhill is not None:
                 i = max(i + 1, downhill[1] + 1)
             else:
@@ -633,10 +795,34 @@ class GroundSegmenter:
         return None
 
     @staticmethod
+    def _trim_ditch_interval(
+        interval: tuple[int, int],
+        emb_end: int,
+        search_start: int,
+        search_stop: int,
+        graph_len: int,
+        allow_embankment_overlap: bool = False,
+    ) -> tuple[int, int] | None:
+        """Clip a ditch interval to the allowed graph range."""
+        start, end = interval
+
+        if allow_embankment_overlap:
+            start = max(int(start), int(search_start), 0)
+        else:
+            start = max(int(start), int(emb_end), int(search_start), 0)
+
+        end = min(int(end), int(search_stop), int(graph_len))
+
+        if end <= start:
+            return None
+
+        return start, end
+
+    @staticmethod
     def split_graph_by_gradient(
         graph: np.ndarray,
         uphill_slope: float,
-        min_uphill_points: int,
+        embankment_min_stop_points: int,
         min_embankment_points: int,
         noise_points: int,
         smooth_window: int,
@@ -644,25 +830,11 @@ class GroundSegmenter:
         ditch_min_uphill_points: int | None = None,
         ditch_immediate_points: int | None = None,
         ditch_max_flat_points: int | None = None,
+        ditch_max_uphill_points: int | None = None,
+        ditch_search_min_m: float = 0.0,
+        ditch_search_max_m: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Input graph must always be oriented:
-            x increases from rail outward.
-
-        Embankment:
-            starts near rail and continues while the profile goes downhill.
-            ends when flat OR uphill lasts for at least min_uphill_points.
-
-        Ditch:
-            is searched after embankment and can be either:
-            - immediate uphill after embankment, when embankment reached bottom;
-            - later downhill -> optional flat/noisy bottom -> uphill.
-
-        Embankment stop condition is ignored until at least
-        min_embankment_points graph samples are included.
-
-        No minimum depth test is used.
-        """
+        """Split a rail-to-edge graph into embankment, ditch, and ground."""
         empty = np.empty((0, 2), dtype=np.float64)
 
         if graph is None or len(graph) < 2:
@@ -713,7 +885,7 @@ class GroundSegmenter:
             while i < len(stop_mask) and stop_mask[i]:
                 i += 1
 
-            if i - start >= min_uphill_points and start >= min_embankment_points:
+            if i - start >= embankment_min_stop_points and start >= min_embankment_points:
                 emb_end = start
                 break
 
@@ -721,12 +893,12 @@ class GroundSegmenter:
             return full_graph, empty, empty
 
         ditch_min_downhill_points = (
-            min_uphill_points
+            embankment_min_stop_points
             if ditch_min_downhill_points is None
             else int(ditch_min_downhill_points)
         )
         ditch_min_uphill_points = (
-            min_uphill_points
+            embankment_min_stop_points
             if ditch_min_uphill_points is None
             else int(ditch_min_uphill_points)
         )
@@ -740,6 +912,33 @@ class GroundSegmenter:
             if ditch_max_flat_points is None
             else int(ditch_max_flat_points)
         )
+        ditch_max_uphill_points = (
+            len(full_graph)
+            if ditch_max_uphill_points is None
+            else int(ditch_max_uphill_points)
+        )
+        ditch_max_uphill_points = max(
+            ditch_min_uphill_points,
+            ditch_max_uphill_points,
+        )
+
+        ditch_search_min_m = max(0.0, float(ditch_search_min_m))
+        if ditch_search_max_m is None:
+            ditch_search_max_m = float(x[-1] - x[0])
+        else:
+            ditch_search_max_m = float(ditch_search_max_m)
+
+        if ditch_search_max_m < ditch_search_min_m:
+            raise ValueError("ditch_search_max_m must be >= ditch_search_min_m.")
+
+        # Measure ditch search distance from the rail side.
+        x_from_side_start = x - x[0]
+        ditch_search_start = int(
+            np.searchsorted(x_from_side_start, ditch_search_min_m, side="left")
+        )
+        ditch_search_stop = int(
+            np.searchsorted(x_from_side_start, ditch_search_max_m, side="right")
+        )
 
         uphill_mask = dz_dx > uphill_slope
         downhill_mask = dz_dx < -uphill_slope
@@ -752,6 +951,24 @@ class GroundSegmenter:
             min_uphill_points=ditch_min_uphill_points,
             immediate_points=ditch_immediate_points,
             max_flat_points=ditch_max_flat_points,
+            max_uphill_points=ditch_max_uphill_points,
+            search_start=ditch_search_start,
+            search_stop=ditch_search_stop,
+        )
+
+        if ditch_interval is None:
+            embankment = full_graph[:emb_end]
+            return embankment, empty, full_graph[emb_end:]
+
+        ditch_start_raw, ditch_end_raw, allow_embankment_overlap = ditch_interval
+
+        ditch_interval = GroundSegmenter._trim_ditch_interval(
+            interval=(ditch_start_raw, ditch_end_raw),
+            emb_end=emb_end,
+            search_start=ditch_search_start,
+            search_stop=ditch_search_stop,
+            graph_len=len(full_graph),
+            allow_embankment_overlap=allow_embankment_overlap,
         )
 
         if ditch_interval is None:
@@ -759,15 +976,8 @@ class GroundSegmenter:
             return embankment, empty, full_graph[emb_end:]
 
         ditch_start, ditch_end = ditch_interval
-        ditch_start = max(emb_end, ditch_start)
-        ditch_end = min(len(full_graph), max(ditch_start, ditch_end))
 
-        if ditch_end <= ditch_start:
-            embankment = full_graph[:emb_end]
-            return embankment, empty, full_graph[emb_end:]
-
-        # Important: if ditch starts later, embankment is extended to the ditch
-        # start. This keeps labels contiguous: embankment -> ditch -> rest.
+        # Keep embankment and ditch ranges contiguous.
         embankment = full_graph[:ditch_start]
         ditch = full_graph[ditch_start:ditch_end]
         rest = full_graph[ditch_end:]
@@ -795,19 +1005,13 @@ class GroundSegmenter:
         points_chunk_rotated: np.ndarray,
         rail_mask: np.ndarray,
     ) -> bool:
-        """
-        Center local X coordinate on rail points.
-
-        This replaces the incorrect min/max tile centering. Min/max centering is
-        unstable because the terrain extent is usually asymmetric. Rail-based
-        centering keeps x=0 tied to the track/centerline reference.
-        """
+        """Center local X on the rail band."""
         if np.count_nonzero(rail_mask) == 0:
             return False
 
         rail_x = points_chunk_rotated[rail_mask, 0]
 
-        # Robust center of rail band. Better than min/max of the whole tile.
+        # Use the central rail band rather than tile edges.
         x_center = 0.5 * (
             np.percentile(rail_x, 5.0)
             + np.percentile(rail_x, 95.0)
@@ -865,7 +1069,7 @@ class GroundSegmenter:
         s = 0.0
         total = center_s[-1]
 
-        with tqdm(desc="Tiling", unit="tile", leave=False, disable=not self.verbose) as pbar:
+        with tqdm(desc="Tiling", unit="tile", leave=False, position=1, disable=not self.verbose) as pbar:
             while s < total:
                 s1 = self._best_cut_end(
                     s=s,
@@ -890,7 +1094,11 @@ class GroundSegmenter:
 
                 s = s1
 
-    def _build_xz_graph(self, xz: np.ndarray) -> np.ndarray:
+    def _build_xz_graph(
+        self,
+        xz: np.ndarray,
+        labels: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
         x = xz[:, 0]
         z = xz[:, 1]
 
@@ -900,41 +1108,83 @@ class GroundSegmenter:
         order = np.argsort(bins)
         bins = bins[order]
         z = z[order]
+        labels = labels[order]
 
         unique_bins, start = np.unique(bins, return_index=True)
 
         count = np.diff(np.r_[start, len(z)])
         x_centers = x0 + (unique_bins + 0.5) * self.graph_x_bin
         mean_z = np.add.reduceat(z, start) / count
+        tmp_count = np.add.reduceat(labels == self.label_tmp, start)
 
-        return np.column_stack((x_centers, mean_z))
+        graph = np.column_stack((x_centers, mean_z))
+        graph_labels = np.where(
+            tmp_count > 0,
+            self.label_tmp,
+            self.ground_label,
+        )
+
+        return graph, graph_labels
 
     def _split_graph_into_sides(
         self,
         graph: np.ndarray,
+        labels: np.ndarray,
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        max_gap = self.graph_x_bin * self.graph_max_gap_bins
-        split_at = np.flatnonzero(np.diff(graph[:, 0]) > max_gap) + 1
-        graph_parts = [part for part in np.split(graph, split_at) if len(part)]
+        rail_indices = np.flatnonzero(labels == self.label_tmp)
 
-        left_graph = None
-        right_graph = None
+        if len(rail_indices) == 0:
+            return None, None
 
-        if len(graph_parts) == 1:
-            if np.mean(graph_parts[0][:, 0]) < 0:
-                left_graph = graph_parts[0]
-            else:
-                right_graph = graph_parts[0]
+        first_rail = rail_indices[0]
+        last_rail = rail_indices[-1]
 
-        elif len(graph_parts) > 1:
-            side_graphs = sorted(graph_parts, key=len, reverse=True)[:2]
+        left_graph = graph[:first_rail] if first_rail else None
+        right_graph = graph[last_rail + 1:] if last_rail + 1 < len(graph) else None
 
-            left_graph, right_graph = sorted(
-                side_graphs,
-                key=lambda part: np.mean(part[:, 0]),
-            )
+        if left_graph is not None:
+            left_graph = self._fill_graph_gaps(left_graph)
+
+        if right_graph is not None:
+            right_graph = self._fill_graph_gaps(right_graph)
 
         return left_graph, right_graph
+
+    def _fill_graph_gaps(self, graph: np.ndarray) -> np.ndarray:
+        if len(graph) < 2:
+            return graph
+
+        n_bins = int(round((graph[-1, 0] - graph[0, 0]) / self.graph_x_bin)) + 1
+        x = graph[0, 0] + np.arange(n_bins) * self.graph_x_bin
+        z = np.interp(x, graph[:, 0], graph[:, 1])
+
+        return np.column_stack((x, z))
+
+    @staticmethod
+    def _has_graph_section(section: np.ndarray | None) -> bool:
+        return section is not None and len(section) > 0
+
+    def _mask_points_between_embankment_sides(
+        self,
+        points: np.ndarray,
+        left_emb: np.ndarray | None,
+        right_emb: np.ndarray | None,
+        x_padding: float,
+    ) -> np.ndarray:
+        """Return the area between the two embankment sides."""
+        mask = np.zeros(points.shape[0], dtype=bool)
+
+        if not self._has_graph_section(left_emb):
+            return mask
+
+        if not self._has_graph_section(right_emb):
+            return mask
+
+        emb_x = np.concatenate((left_emb[:, 0], right_emb[:, 0]))
+        x_min = float(emb_x.min()) - x_padding
+        x_max = float(emb_x.max()) + x_padding
+
+        return (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
 
     def _apply_section_labels(
         self,
@@ -984,17 +1234,21 @@ class GroundSegmenter:
         emb_mask = left_emb_mask | right_emb_mask
         ditch_mask = left_ditch_mask | right_ditch_mask
         rest_mask = left_rest_mask | right_rest_mask
+        center_emb_mask = self._mask_points_between_embankment_sides(
+            points=points_chunk_rotated,
+            left_emb=left_emb,
+            right_emb=right_emb,
+            x_padding=x_padding,
+        )
 
-        # Order matters. Ditch should override embankment/rest if padding overlaps.
+        # Ditch labels override overlapping embankment labels.
         labels_sectioned[rest_mask] = self.ground_label
-        labels_sectioned[emb_mask] = self.embankment_label
+        labels_sectioned[emb_mask | center_emb_mask] = self.embankment_label
         labels_sectioned[ditch_mask] = self.ditch_label
 
         return labels_sectioned
 
-    # -------------------------------------------------------------------------
     # Boundary smoothing
-    # -------------------------------------------------------------------------
 
     @staticmethod
     def _project_to_sl_frame(
@@ -1002,122 +1256,41 @@ class GroundSegmenter:
         centerline: np.ndarray,
         center_s: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Project 2D XY points into the centerline (s, x_lateral) frame.
+        """Project XY points onto the nearest centerline segment."""
+        if xy.shape[0] == 0:
+            empty = np.empty(0, dtype=np.float64)
+            return empty, empty
 
-        s          arc-length position along the centerline.
-        x_lateral  signed cross-track distance; positive = right of forward.
+        if centerline.shape[0] < 2:
+            raise ValueError("centerline must contain at least two points.")
 
-        Uses the tangent of the nearest centerline segment, same convention
-        as _rotated_part (right = [forward_y, -forward_x]).
-        """
-        tree = cKDTree(centerline)
-        _, nn = tree.query(xy)
+        seg_start = centerline[:-1].astype(np.float64, copy=False)
+        seg_end = centerline[1:].astype(np.float64, copy=False)
+        seg_vec = seg_end - seg_start
+        seg_len2 = np.einsum("ij,ij->i", seg_vec, seg_vec)
+        seg_len2 = np.where(seg_len2 < 1e-12, 1.0, seg_len2)
 
-        i = np.clip(nn, 0, len(centerline) - 2)
+        seg_mid = 0.5 * (seg_start + seg_end)
+        tree = cKDTree(seg_mid)
+        _, seg_idx = tree.query(xy)
 
-        delta = centerline[i + 1] - centerline[i]
-        norms = np.linalg.norm(delta, axis=1, keepdims=True)
-        norms = np.where(norms < 1e-9, 1.0, norms)
-        tangent = delta / norms
+        a = seg_start[seg_idx]
+        v = seg_vec[seg_idx]
+        vv = seg_len2[seg_idx]
 
-        right = np.column_stack([tangent[:, 1], -tangent[:, 0]])
+        t = np.einsum("ij,ij->i", xy - a, v) / vv
+        t = np.clip(t, 0.0, 1.0)
 
-        s_vals = center_s[nn]
-        x_lateral = np.einsum("ij,ij->i", xy - centerline[i], right)
+        projection = a + t[:, None] * v
+
+        seg_len = np.sqrt(vv)
+        tangent = v / seg_len[:, None]
+        right = np.column_stack((tangent[:, 1], -tangent[:, 0]))
+
+        s_vals = center_s[seg_idx] + t * seg_len
+        x_lateral = np.einsum("ij,ij->i", xy - projection, right)
 
         return s_vals, x_lateral
-
-    @staticmethod
-    def _outer_boundary_curve(
-        s: np.ndarray,
-        x_abs: np.ndarray,
-        labels: np.ndarray,
-        target_label: int,
-        s_bin_centers: np.ndarray,
-        s_bin_size: float,
-        pcd_edge_margin: float,
-    ) -> np.ndarray:
-        """
-        For each s-bin, find the outermost (max |x|) boundary of target_label.
-
-        Bins where the target label extends to the PCD edge are marked NaN —
-        those are scan limits, not terrain transitions.
-
-        Same function is used for both embankment outer boundary and ditch outer
-        boundary; just pass a different target_label.
-
-        Returns array of shape (n_bins,) with NaN where boundary not found.
-        """
-        n = len(s_bin_centers)
-        boundary = np.full(n, np.nan)
-
-        s_lo = s_bin_centers[0] - 0.5 * s_bin_size
-        bin_idx = np.clip(
-            np.floor((s - s_lo) / s_bin_size).astype(np.int64),
-            0, n - 1,
-        )
-
-        for b in range(n):
-            in_bin = bin_idx == b
-
-            if not np.any(in_bin):
-                continue
-
-            target_in_bin = in_bin & (labels == target_label)
-
-            if not np.any(target_in_bin):
-                continue
-
-            max_target = x_abs[target_in_bin].max()
-            max_all = x_abs[in_bin].max()
-
-            # Skip bins where target reaches the scan boundary.
-            if max_target >= max_all - pcd_edge_margin:
-                continue
-
-            boundary[b] = max_target
-
-        return boundary
-
-    @staticmethod
-    def _inner_boundary_curve(
-        s: np.ndarray,
-        x_abs: np.ndarray,
-        labels: np.ndarray,
-        target_label: int,
-        s_bin_centers: np.ndarray,
-        s_bin_size: float,
-    ) -> np.ndarray:
-        """
-        For each s-bin, find the innermost (min |x|) boundary of target_label.
-
-        This is the true start of a label's own footprint, independent of
-        whatever sits between it and the rail. Used so the ditch's inner edge
-        is not forced to coincide with the embankment's outer edge — the two
-        are tracked separately so a real ground/rest gap between embankment
-        and ditch survives smoothing instead of being swallowed into ditch.
-
-        Returns array of shape (n_bins,) with NaN where the label is absent.
-        """
-        n = len(s_bin_centers)
-        boundary = np.full(n, np.nan)
-
-        s_lo = s_bin_centers[0] - 0.5 * s_bin_size
-        bin_idx = np.clip(
-            np.floor((s - s_lo) / s_bin_size).astype(np.int64),
-            0, n - 1,
-        )
-
-        for b in range(n):
-            target_in_bin = (bin_idx == b) & (labels == target_label)
-
-            if not np.any(target_in_bin):
-                continue
-
-            boundary[b] = x_abs[target_in_bin].min()
-
-        return boundary
 
     @staticmethod
     def _smooth_boundary(
@@ -1125,16 +1298,7 @@ class GroundSegmenter:
         boundary: np.ndarray,
         smooth_sigma_m: float,
     ) -> np.ndarray:
-        """
-        Gaussian-smooth a 1D boundary curve.
-
-        NaN gaps (missing s-bins) are filled by linear interpolation before
-        smoothing so the Gaussian has no holes to smear. Edge bins are filled
-        by nearest-valid clamping (np.interp default).
-
-        smooth_sigma_m is the Gaussian sigma in arc-length meters.
-        sigma_bins = 0 → identity (no smoothing), handled by gaussian_filter1d.
-        """
+        """Fill gaps and Gaussian-smooth a boundary curve."""
         valid = ~np.isnan(boundary)
 
         if np.sum(valid) < 2:
@@ -1148,9 +1312,125 @@ class GroundSegmenter:
         )
 
         bin_size = (s_centers[-1] - s_centers[0]) / max(len(s_centers) - 1, 1)
-        sigma_bins = max(0.0, smooth_sigma_m / bin_size)
+        sigma_bins = max(0.0, float(smooth_sigma_m) / max(bin_size, 1e-9))
 
-        return gaussian_filter1d(filled, sigma=sigma_bins)
+        if sigma_bins <= 1e-9:
+            return filled
+
+        return gaussian_filter1d(filled, sigma=sigma_bins, mode="nearest")
+
+    @staticmethod
+    def _build_horizontal_label_grid(
+        s: np.ndarray,
+        x_abs: np.ndarray,
+        labels: np.ndarray,
+        ground_label: int,
+        embankment_label: int,
+        ditch_label: int,
+        s_bin_centers: np.ndarray,
+        s_bin_size: float,
+        x_bin_size: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Bin labels on an (s, lateral-distance) grid."""
+        n_s = len(s_bin_centers)
+
+        if n_s == 0 or s.shape[0] == 0:
+            empty_labels = np.empty((0, 0), dtype=np.int16)
+            empty_occ = np.empty((0, 0), dtype=bool)
+            empty_x = np.empty(0, dtype=np.float64)
+            return empty_labels, empty_occ, empty_x
+
+        x_bin_size = max(float(x_bin_size), 1e-6)
+        x_max = max(0.0, float(np.max(x_abs)))
+        n_x = max(1, int(np.ceil((x_max + x_bin_size) / x_bin_size)))
+        x_centers = (np.arange(n_x, dtype=np.float64) + 0.5) * x_bin_size
+
+        s_lo = s_bin_centers[0] - 0.5 * s_bin_size
+        s_idx = np.floor((s - s_lo) / s_bin_size).astype(np.int64)
+        s_idx = np.clip(s_idx, 0, n_s - 1)
+
+        x_idx = np.floor(x_abs / x_bin_size).astype(np.int64)
+        x_idx = np.clip(x_idx, 0, n_x - 1)
+
+        flat = s_idx * n_x + x_idx
+        size = n_s * n_x
+
+        total = np.zeros(size, dtype=np.int32)
+        ground_count = np.zeros(size, dtype=np.int32)
+        emb_count = np.zeros(size, dtype=np.int32)
+        ditch_count = np.zeros(size, dtype=np.int32)
+
+        np.add.at(total, flat, 1)
+        np.add.at(ground_count, flat[labels == ground_label], 1)
+        np.add.at(emb_count, flat[labels == embankment_label], 1)
+        np.add.at(ditch_count, flat[labels == ditch_label], 1)
+
+        total = total.reshape(n_s, n_x)
+        ground_count = ground_count.reshape(n_s, n_x)
+        emb_count = emb_count.reshape(n_s, n_x)
+        ditch_count = ditch_count.reshape(n_s, n_x)
+
+        occupied = total > 0
+        cell_labels = np.full((n_s, n_x), ground_label, dtype=np.int16)
+
+        # Prefer ditch, then embankment, on ties.
+        emb_wins = (emb_count >= ground_count) & (emb_count > 0)
+        ditch_wins = (
+            (ditch_count >= ground_count)
+            & (ditch_count >= emb_count)
+            & (ditch_count > 0)
+        )
+
+        cell_labels[emb_wins] = embankment_label
+        cell_labels[ditch_wins] = ditch_label
+        cell_labels[~occupied] = -1
+
+        return cell_labels, occupied, x_centers
+
+    @staticmethod
+    def _boundary_curves_from_horizontal_grid(
+        cell_labels: np.ndarray,
+        occupied: np.ndarray,
+        x_centers: np.ndarray,
+        embankment_label: int,
+        ditch_label: int,
+        pcd_edge_margin: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Extract boundaries and mark rows that reach the cloud edge."""
+        n_s = cell_labels.shape[0]
+
+        emb_outer = np.full(n_s, np.nan, dtype=np.float64)
+        ditch_inner = np.full(n_s, np.nan, dtype=np.float64)
+        ditch_outer = np.full(n_s, np.nan, dtype=np.float64)
+        edge_locked = np.zeros(n_s, dtype=bool)
+
+        for row in range(n_s):
+            occupied_cols = np.flatnonzero(occupied[row])
+
+            if occupied_cols.size == 0:
+                continue
+
+            max_all_x = x_centers[occupied_cols[-1]]
+
+            emb_cols = np.flatnonzero(cell_labels[row] == embankment_label)
+            if emb_cols.size:
+                outer = x_centers[emb_cols[-1]]
+                if outer >= max_all_x - pcd_edge_margin:
+                    edge_locked[row] = True
+                else:
+                    emb_outer[row] = outer
+
+            ditch_cols = np.flatnonzero(cell_labels[row] == ditch_label)
+            if ditch_cols.size:
+                inner = x_centers[ditch_cols[0]]
+                outer = x_centers[ditch_cols[-1]]
+                if outer >= max_all_x - pcd_edge_margin:
+                    edge_locked[row] = True
+                else:
+                    ditch_inner[row] = inner
+                    ditch_outer[row] = outer
+
+        return emb_outer, ditch_inner, ditch_outer, edge_locked
 
     def _smooth_label_boundaries(
         self,
@@ -1160,43 +1440,7 @@ class GroundSegmenter:
         centerline: np.ndarray,
         center_s: np.ndarray,
     ) -> np.ndarray:
-        """
-        Smooth embankment and ditch boundaries along the centerline.
-
-        The per-tile gradient detector produces correct but sharp label
-        transitions at tile edges. This pass works in the global (s, x_lateral)
-        frame and replaces those crisp rectangles with smooth boundary curves.
-
-        Algorithm
-        ---------
-        1. Project all ground/embankment/ditch points to (s, x_lateral).
-        2. Reset every relevant point to ground_label (clean slate).
-        3. For each side (left/right), extract the outer boundary curve for
-           embankment and ditch using _outer_boundary_curve (same function,
-           different target_label), and the ditch's own inner boundary using
-           _inner_boundary_curve.
-        4. Smooth all three curves with Gaussian sigma = self.smooth_level
-           [metres].
-        5. Relabel:
-             ditch  → ditch_inner_smooth < |x| ≤ ditch_outer_smooth
-             emb    → |x| ≤ emb_outer_smooth
-           (applied only in s-ranges where that label was originally detected)
-           The ditch's inner edge is tracked on its own rather than reused from
-           the embankment's outer edge, so a real ground/rest gap between
-           embankment and ditch is preserved as ground instead of being
-           absorbed into the ditch.
-        6. If a side's embankment boundary can't be determined at all (e.g. the
-           embankment runs to the edge of the available point cloud in every
-           s-bin, which happens when there is no ground/ditch beyond it), the
-           side is left untouched instead of being wiped to ground — there is
-           nothing to smooth against, but the original labels must not be lost.
-
-        Parameters
-        ----------
-        points    Normalised 3D point array (ground_rail space).
-        labels    Current label array for those points (same length).
-        rail_mask Boolean mask identifying rail-proximity points within labels.
-        """
+        """Smooth labels in the centerline and lateral-distance frame."""
         relevant_mask = np.isin(
             labels,
             [self.ground_label, self.embankment_label, self.ditch_label],
@@ -1211,102 +1455,178 @@ class GroundSegmenter:
 
         s_vals, x_vals = self._project_to_sl_frame(rel_xy, centerline, center_s)
 
-        # S-bin grid at centerline voxel resolution.
-        s_bin_size = self.curve_resolution
-        s0, s1 = float(s_vals.min()), float(s_vals.max())
-        n_bins = max(4, int(np.ceil((s1 - s0) / s_bin_size)))
-        s_centers = s0 + (np.arange(n_bins) + 0.5) * s_bin_size
+        s_bin_size = max(float(self.curve_resolution), 1e-6)
+        x_bin_size = max(float(self.graph_x_bin), 1e-6)
 
-        # PCD edge margin reuses the x-bin size (same physical scale).
-        pcd_edge_margin = self.graph_x_bin
+        s0 = float(s_vals.min())
+        s1 = float(s_vals.max())
+        n_bins = max(4, int(np.ceil((s1 - s0) / s_bin_size)))
+        s_centers = s0 + (np.arange(n_bins, dtype=np.float64) + 0.5) * s_bin_size
+        s_lo = s_centers[0] - 0.5 * s_bin_size
 
         result = labels.copy()
-        result[rel_idx] = self.ground_label  # clean slate for relevant points
 
         for side_sign in (+1.0, -1.0):
-            # side_sign > 0 → right of forward; < 0 → left.
-            side_mask = (x_vals * side_sign) >= 0
+            # Keep the centerline on one side only.
+            if side_sign > 0:
+                side_mask = x_vals >= 0.0
+            else:
+                side_mask = x_vals < 0.0
 
             if not np.any(side_mask):
                 continue
 
-            side_idx = np.flatnonzero(side_mask)
+            side_all_idx = np.flatnonzero(side_mask)
+            side_all_s = s_vals[side_all_idx]
+            side_all_x = np.abs(x_vals[side_all_idx])
+            side_all_labels = rel_labels[side_all_idx]
+
+            labelled_mask = np.isin(
+                side_all_labels,
+                [self.embankment_label, self.ditch_label],
+            )
+
+            if not np.any(labelled_mask):
+                continue
+
+            # Keep the grid near labelled terrain.
+            labelled_x_max = float(side_all_x[labelled_mask].max())
+            x_limit = max(
+                labelled_x_max + 3.0 * x_bin_size,
+                float(self.distance_limit) + x_bin_size,
+            )
+            corridor_mask = side_all_x <= x_limit
+
+            if not np.any(corridor_mask):
+                continue
+
+            side_idx = side_all_idx[corridor_mask]
             side_s = s_vals[side_idx]
             side_x = np.abs(x_vals[side_idx])
             side_labels = rel_labels[side_idx]
 
-            # --- Extract outer boundaries (same function for both labels). ---
-            emb_outer = self._outer_boundary_curve(
+            cell_labels, occupied, x_centers = self._build_horizontal_label_grid(
                 s=side_s,
                 x_abs=side_x,
                 labels=side_labels,
-                target_label=self.embankment_label,
+                ground_label=self.ground_label,
+                embankment_label=self.embankment_label,
+                ditch_label=self.ditch_label,
                 s_bin_centers=s_centers,
                 s_bin_size=s_bin_size,
-                pcd_edge_margin=pcd_edge_margin,
+                x_bin_size=x_bin_size,
             )
 
-            ditch_outer = self._outer_boundary_curve(
-                s=side_s,
-                x_abs=side_x,
-                labels=side_labels,
-                target_label=self.ditch_label,
-                s_bin_centers=s_centers,
-                s_bin_size=s_bin_size,
-                pcd_edge_margin=pcd_edge_margin,
+            if cell_labels.size == 0:
+                continue
+
+            emb_outer, ditch_inner, ditch_outer, edge_locked = (
+                self._boundary_curves_from_horizontal_grid(
+                    cell_labels=cell_labels,
+                    occupied=occupied,
+                    x_centers=x_centers,
+                    embankment_label=self.embankment_label,
+                    ditch_label=self.ditch_label,
+                    pcd_edge_margin=x_bin_size,
+                )
             )
 
-            # Ditch's own inner edge, tracked independently of embankment's
-            # outer edge so a real rest/ground gap between the two survives.
-            ditch_inner = self._inner_boundary_curve(
-                s=side_s,
-                x_abs=side_x,
-                labels=side_labels,
-                target_label=self.ditch_label,
-                s_bin_centers=s_centers,
-                s_bin_size=s_bin_size,
-            )
+            emb_valid = ~np.isnan(emb_outer)
+            ditch_valid = ~np.isnan(ditch_outer) & ~np.isnan(ditch_inner)
 
-            if np.all(np.isnan(emb_outer)):
-                # No usable embankment boundary anywhere on this side (e.g. no
-                # ditch/ground exists beyond it, so every bin hit the PCD edge
-                # filter). Nothing to smooth against — keep original labels
-                # rather than leaving them wiped to ground.
+            # Do not smooth a boundary at the cloud edge.
+            if np.sum(emb_valid) < 2:
                 result[rel_idx[side_idx]] = side_labels
                 continue
 
-            # --- Smooth boundary curves. ---
-            emb_smooth = self._smooth_boundary(s_centers, emb_outer, self.smooth_level)
-            ditch_smooth = self._smooth_boundary(s_centers, ditch_outer, self.smooth_level)
-            ditch_inner_smooth = self._smooth_boundary(s_centers, ditch_inner, self.smooth_level)
-
-            # Presence flags: only apply labels in s-ranges where they existed.
-            emb_present = (~np.isnan(emb_outer)).astype(np.float64)
-            ditch_present = (~np.isnan(ditch_outer)).astype(np.float64)
-
-            # Gaussian-smooth presence too (same sigma), not just linear interp.
-            # Otherwise single-bin on/off flicker in raw ditch detection produces
-            # a sawtooth presence mask instead of a smooth ramp.
-            emb_present_smooth = self._smooth_boundary(s_centers, emb_present, self.smooth_level)
-            ditch_present_smooth = self._smooth_boundary(s_centers, ditch_present, self.smooth_level)
-
-            emb_at_pts = np.interp(side_s, s_centers, emb_smooth)
-            ditch_at_pts = np.interp(side_s, s_centers, ditch_smooth)
-            ditch_inner_at_pts = np.interp(side_s, s_centers, ditch_inner_smooth)
-            emb_present_at_pts = np.interp(side_s, s_centers, emb_present_smooth) > 0.3
-            ditch_present_at_pts = np.interp(side_s, s_centers, ditch_present_smooth) > 0.3
-
-            # --- Relabel ditch first (its own span, ditch_inner < x ≤ ditch_outer). ---
-            ditch_new = (
-                ditch_present_at_pts
-                & (side_x > ditch_inner_at_pts)
-                & (side_x <= ditch_at_pts)
+            emb_smooth = self._smooth_boundary(
+                s_centers,
+                emb_outer,
+                self.smooth_level,
             )
-            result[rel_idx[side_idx[ditch_new]]] = self.ditch_label
 
-            # --- Relabel embankment (inner region, x ≤ emb_outer). ---
-            emb_new = emb_present_at_pts & (side_x <= emb_at_pts)
-            result[rel_idx[side_idx[emb_new]]] = self.embankment_label
+            if np.sum(ditch_valid) >= 2:
+                ditch_inner_smooth = self._smooth_boundary(
+                    s_centers,
+                    ditch_inner,
+                    self.smooth_level,
+                )
+                ditch_outer_smooth = self._smooth_boundary(
+                    s_centers,
+                    ditch_outer,
+                    self.smooth_level,
+                )
+            else:
+                ditch_inner_smooth = ditch_inner.copy()
+                ditch_outer_smooth = ditch_outer.copy()
+
+            emb_presence = emb_valid.astype(np.float64)
+            ditch_presence = ditch_valid.astype(np.float64)
+
+            emb_presence_smooth = self._smooth_boundary(
+                s_centers,
+                emb_presence,
+                self.smooth_level,
+            )
+            ditch_presence_smooth = self._smooth_boundary(
+                s_centers,
+                ditch_presence,
+                self.smooth_level,
+            )
+
+            side_s_idx = np.floor((side_s - s_lo) / s_bin_size).astype(np.int64)
+            side_s_idx = np.clip(side_s_idx, 0, len(s_centers) - 1)
+            locked_at_points = edge_locked[side_s_idx]
+
+            smoothable = ~locked_at_points
+
+            if not np.any(smoothable):
+                result[rel_idx[side_idx]] = side_labels
+                continue
+
+            smooth_side_idx = side_idx[smoothable]
+            smooth_s = s_vals[smooth_side_idx]
+            smooth_x = np.abs(x_vals[smooth_side_idx])
+
+            emb_at_pts = np.interp(smooth_s, s_centers, emb_smooth)
+            emb_presence_at_pts = (
+                np.interp(smooth_s, s_centers, emb_presence_smooth) > 0.3
+            )
+
+            ditch_inner_at_pts = np.interp(
+                smooth_s,
+                s_centers,
+                ditch_inner_smooth,
+            )
+            ditch_outer_at_pts = np.interp(
+                smooth_s,
+                s_centers,
+                ditch_outer_smooth,
+            )
+            ditch_presence_at_pts = (
+                np.interp(smooth_s, s_centers, ditch_presence_smooth) > 0.3
+            )
+
+            # Reset only rows with a usable boundary.
+            result[rel_idx[smooth_side_idx]] = self.ground_label
+
+            emb_new = emb_presence_at_pts & (smooth_x <= emb_at_pts)
+            result[rel_idx[smooth_side_idx[emb_new]]] = self.embankment_label
+
+            ditch_new = (
+                ditch_presence_at_pts
+                & (smooth_x > ditch_inner_at_pts)
+                & (smooth_x <= ditch_outer_at_pts)
+            )
+            result[rel_idx[smooth_side_idx[ditch_new]]] = self.ditch_label
+
+            # Preserve cloud-edge rows.
+            if np.any(locked_at_points):
+                locked_side_idx = side_idx[locked_at_points]
+                result[rel_idx[locked_side_idx]] = rel_labels[locked_side_idx]
+
+        # Keep rail points on the embankment through smoothing.
+        result[rail_mask] = self.embankment_label
 
         return result
 
@@ -1314,8 +1634,10 @@ class GroundSegmenter:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
         with tqdm(desc="Filtering PCD", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
-            ground_mask = (full_labels == self.ground_label) | (
-                full_labels == self.rail_label
+            ground_mask = (
+                (full_labels == self.ground_label)
+                | (full_labels == self.rail_label)
+                | (full_labels == self.label_tmp)
             )
             ground_idx = np.flatnonzero(ground_mask)
 
@@ -1325,7 +1647,8 @@ class GroundSegmenter:
             ground_rail = points[ground_idx].copy()
             ground_rail_labels = full_labels[ground_idx].copy()
             original_rail_mask = ground_rail_labels == self.rail_label
-            ground_rail_labels[original_rail_mask] = self.ground_label
+            original_tmp_mask = ground_rail_labels == self.label_tmp
+            ground_rail_labels[original_rail_mask | original_tmp_mask] = self.ground_label
 
             pbar.update(1)
             rail_mask = self._label_rail_points(
@@ -1337,7 +1660,7 @@ class GroundSegmenter:
             if np.count_nonzero(rail_mask) == 0:
                 return full_labels
 
-            ground_rail_labels[rail_mask] = self.embankment_label
+            ground_rail_labels[rail_mask] = self.label_tmp
 
             # Local normalization for numerical stability.
             ground_rail[:, :2] -= ground_rail[:, :2].mean(axis=0)
@@ -1372,6 +1695,7 @@ class GroundSegmenter:
                 centerline=centerline,
                 center_s=center_s,
             )
+
             pbar.update(2)
 
         for points_chunk_rotated, indices in self.iter_rectangles(
@@ -1388,14 +1712,6 @@ class GroundSegmenter:
             labels_chunk = ground_rail_labels[indices]
             rail_mask_chunk = rail_mask[indices]
 
-            centered = self._center_chunk_x_on_rail(
-                points_chunk_rotated=points_chunk_rotated,
-                rail_mask=rail_mask_chunk,
-            )
-
-            if not centered:
-                continue
-
             nearest_points_mask = self._find_nearest_points(
                 points=points_chunk_rotated,
                 labels=labels_chunk,
@@ -1410,20 +1726,41 @@ class GroundSegmenter:
             section_indices = indices[nearest_points_mask]
             rail_mask_nearest = rail_mask_chunk[nearest_points_mask]
 
+            # plot_xyz_cloud(points_nearest, labels_nearest)
+
             if points_nearest.shape[0] == 0:
                 continue
 
-            xz = points_nearest[~rail_mask_nearest][:, [0, 2]]
+            centered = self._center_chunk_x_on_rail(
+                points_chunk_rotated=points_nearest,
+                rail_mask=rail_mask_nearest,
+            )
+
+            if not centered:
+                continue
+
+            xz = points_nearest[:, [0, 2]]
 
             if xz.shape[0] == 0:
                 continue
-
-            graph = self._build_xz_graph(xz)
+            
+            graph, graph_labels = self._build_xz_graph(xz, labels_nearest)
 
             if graph.shape[0] < 2:
                 continue
 
-            left_graph, right_graph = self._split_graph_into_sides(graph)
+            left_graph, right_graph = self._split_graph_into_sides(
+                graph,
+                graph_labels,
+            )
+
+            # plot_xz_graph_split_by_rail(
+            #     xz,
+            #     graph,
+            #     graph_labels,
+            #     left_graph,
+            #     right_graph,
+            # )
 
             empty = np.empty((0, 2), dtype=np.float64)
 
@@ -1441,7 +1778,7 @@ class GroundSegmenter:
                 left_emb, left_ditch, left_rest = self.split_graph_by_gradient(
                     graph=left_graph_flipped,
                     uphill_slope=self.graph_uphill_slope,
-                    min_uphill_points=self.graph_min_uphill_points,
+                    embankment_min_stop_points=self.graph_embankment_min_stop_points,
                     min_embankment_points=self.graph_min_embankment_points,
                     noise_points=self.graph_noise_points,
                     smooth_window=self.graph_smooth_window,
@@ -1449,6 +1786,9 @@ class GroundSegmenter:
                     ditch_min_uphill_points=self.graph_ditch_min_uphill_points,
                     ditch_immediate_points=self.graph_ditch_immediate_points,
                     ditch_max_flat_points=self.graph_ditch_max_flat_points,
+                    ditch_max_uphill_points=self.graph_ditch_max_uphill_points,
+                    ditch_search_min_m=self.graph_ditch_search_min_m,
+                    ditch_search_max_m=self.graph_ditch_search_max_m,
                 )
 
                 left_emb, left_ditch, left_rest = self._unflip_sections_x(
@@ -1461,7 +1801,7 @@ class GroundSegmenter:
                 right_emb, right_ditch, right_rest = self.split_graph_by_gradient(
                     graph=right_graph,
                     uphill_slope=self.graph_uphill_slope,
-                    min_uphill_points=self.graph_min_uphill_points,
+                    embankment_min_stop_points=self.graph_embankment_min_stop_points,
                     min_embankment_points=self.graph_min_embankment_points,
                     noise_points=self.graph_noise_points,
                     smooth_window=self.graph_smooth_window,
@@ -1469,7 +1809,20 @@ class GroundSegmenter:
                     ditch_min_uphill_points=self.graph_ditch_min_uphill_points,
                     ditch_immediate_points=self.graph_ditch_immediate_points,
                     ditch_max_flat_points=self.graph_ditch_max_flat_points,
+                    ditch_max_uphill_points=self.graph_ditch_max_uphill_points,
+                    ditch_search_min_m=self.graph_ditch_search_min_m,
+                    ditch_search_max_m=self.graph_ditch_search_max_m,
                 )
+
+            # plot_xz_side_sections(
+            #     xz,
+            #     left_emb,
+            #     left_ditch,
+            #     left_rest,
+            #     right_emb,
+            #     right_ditch,
+            #     right_rest,
+            # )
 
             labels_sectioned = labels_nearest.copy()
 
@@ -1488,9 +1841,10 @@ class GroundSegmenter:
             labels_sectioned[rail_mask_nearest] = self.embankment_label
             full_labels[full_indices] = labels_sectioned
 
+        # Remove temporary labels before smoothing.
+        full_labels[ground_idx] = self._drop_tmp_labels(full_labels[ground_idx])
+
         # Smooth boundaries if enabled.
-        # rail_mask is passed separately because at this point rail points
-        # already carry embankment_label, not rail_label.
         if self.smooth:
             full_labels[ground_idx] = self._smooth_label_boundaries(
                 points=ground_rail,
@@ -1500,12 +1854,21 @@ class GroundSegmenter:
                 center_s=center_s,
             )
 
+        # Do not return temporary labels.
+        full_labels[ground_idx] = self._drop_tmp_labels(full_labels[ground_idx])
+
         original_rail_mask = labels[ground_idx] == self.rail_label
         rail_on_embankment_mask = original_rail_mask & (
             full_labels[ground_idx] == self.embankment_label
         )
         full_labels[ground_idx[original_rail_mask]] = self.ground_label
         full_labels[ground_idx[rail_on_embankment_mask]] = self.rail_label
+
+        # plot_cloud(
+        #     ground_rail,
+        #     full_labels[ground_idx],
+        #     title="After smoothing",
+        # )
 
         return full_labels
 
@@ -1514,13 +1877,12 @@ if __name__ == "__main__":
     from utils.plot_cloud import plot_cloud
 
     las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_rln.laz"
+        "/Users/michalsiniarski/Documents/DATA/BRIK/LAW2PROCESS/MOD/16-25_mod.laz"
     )
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
     labels = np.asarray(las_file.classification)
 
-    plot_cloud(points, labels)
 
     cfg_path = pth.Path(__file__).parent / "ground_segm_config.json"
     db_param_path = pth.Path(__file__).parent / "db_params.txt"
