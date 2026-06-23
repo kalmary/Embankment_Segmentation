@@ -229,6 +229,8 @@ class GroundSegmenter:
         return params
 
     def __load_tracks_from_db(self, bbox):
+        conn = None
+
         try:
             conn = psycopg2.connect(**self.__db_param)
 
@@ -242,13 +244,15 @@ class GroundSegmenter:
                 );
             """
 
-            cur = conn.cursor()
-            cur.execute(query, (xmin, ymin, xmax, ymax))
-            rows = cur.fetchall()
-            conn.close()
+            with conn.cursor() as cur:
+                cur.execute(query, (xmin, ymin, xmax, ymax))
+                rows = cur.fetchall()
         except psycopg2.Error:
-            logger.exception("Failed to retrieve rail tracks from the database for bbox %s", bbox)
+            logger.exception("Rail-track database request failed for bbox %s", bbox)
             raise
+        finally:
+            if conn is not None:
+                conn.close()
 
         lines = []
         for (wkt_line,) in rows:
@@ -1642,6 +1646,7 @@ class GroundSegmenter:
             ground_idx = np.flatnonzero(ground_mask)
 
             if ground_idx.size == 0:
+                logger.warning("Ground segmentation skipped: no ground or rail points found.")
                 return full_labels
 
             ground_rail = points[ground_idx].copy()
@@ -1658,6 +1663,9 @@ class GroundSegmenter:
             pbar.update(2)
 
             if np.count_nonzero(rail_mask) == 0:
+                logger.warning(
+                    "Ground segmentation skipped: no rail points matched database tracks."
+                )
                 return full_labels
 
             ground_rail_labels[rail_mask] = self.label_tmp
@@ -1674,6 +1682,7 @@ class GroundSegmenter:
             centerline_xy = rail[:, :2]
 
             if centerline_xy.shape[0] == 0:
+                logger.warning("Ground segmentation skipped: no rail points available for centerline.")
                 return full_labels
 
             xy = ground_rail[:, :2]
@@ -1683,11 +1692,13 @@ class GroundSegmenter:
             pbar.update(1)
 
             if centerline.shape[0] < 2:
+                logger.warning("Ground segmentation skipped: centerline has fewer than two points.")
                 return full_labels
 
             center_s = self._arc_length(centerline)
 
             if center_s[-1] <= 0:
+                logger.warning("Ground segmentation skipped: centerline has zero length.")
                 return full_labels
 
             point_s = self._assign_points_to_centerline(
@@ -1863,6 +1874,24 @@ class GroundSegmenter:
         )
         full_labels[ground_idx[original_rail_mask]] = self.ground_label
         full_labels[ground_idx[rail_on_embankment_mask]] = self.rail_label
+
+        embankment_count = np.count_nonzero(
+            full_labels[ground_idx] == self.embankment_label
+        )
+        ditch_count = np.count_nonzero(full_labels[ground_idx] == self.ditch_label)
+        logger.info(
+            "Ground segmentation completed: candidates=%d, rail=%d, embankment=%d, ditch=%d.",
+            ground_idx.size,
+            np.count_nonzero(rail_mask),
+            embankment_count,
+            ditch_count,
+        )
+
+        if embankment_count == 0:
+            logger.warning("Ground segmentation completed without embankment points.")
+
+        if ditch_count == 0:
+            logger.warning("Ground segmentation completed without ditch points.")
 
         # plot_cloud(
         #     ground_rail,
