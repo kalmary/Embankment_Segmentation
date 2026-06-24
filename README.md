@@ -72,56 +72,69 @@ Default `src/ground_segm_config.json`:
 
 ```json
 {
-  "distance_limit": 12.0,
+  "distance_limit": 25.0,
   "ground_label": 1,
   "rail_label": 0,
   "rail_radius": 1.0,
   "embankment_label": 10,
   "ditch_label": 11,
-  "length_min": 1.0,
+
+  "length_min": 2.0,
   "length_max": 10.0,
   "width_margin": 0.0,
-  "max_curve_ratio": 1.05,
-  "curve_resolution": 0.25,
+  "max_curve_ratio": 1.1,
+  "curve_resolution": 1.5,
+
   "graph_x_bin": 0.25,
-  "graph_uphill_slope": 0.15,
-  "graph_min_uphill_points": 3,
-  "graph_min_embankment_points": 8,
+  "graph_uphill_slope": 0.1,
+
+  "graph_embankment_min_stop_m": 0.6,
+  "graph_min_embankment_m": 1.6,
+
   "graph_noise_points": 2,
-  "graph_smooth_window": 3,
+  "graph_smooth_window": 5,
   "graph_max_gap_bins": 1.0,
-  "graph_ditch_min_downhill_points": 2,
-  "graph_ditch_min_uphill_points": 3,
-  "graph_ditch_immediate_points": 3,
-  "graph_ditch_max_flat_points": 5,
-  "smoothing": true,
-  "smooth_level": 5
+
+  "graph_ditch_min_downhill_m": 0.4,
+  "graph_ditch_min_uphill_m": 0.4,
+  "graph_ditch_immediate_points_m": 0.7,
+  "graph_ditch_max_flat_m": 1.0,
+  "graph_ditch_max_uphill_m": 2.0,
+
+  "graph_ditch_search_min_m": 6.0,
+  "graph_ditch_search_max_m": 16.0,
+
+  "smooth": true,
+  "smooth_level": 20.0
 }
 ```
 
 | Parameter | Description |
 |---|---|
-| `distance_limit` | Maximum lateral distance from the rail considered during nearest-point selection. |
+| `distance_limit` | Maximum distance from a rail point used when selecting terrain points, in metres. |
 | `ground_label` | Input and output label for ground points. |
 | `rail_label` | Input and output label for rail points. |
 | `rail_radius` | Distance from rail geometry used to detect rail-adjacent points. |
 | `embankment_label` | Output label assigned to embankment points. |
 | `ditch_label` | Output label assigned to ditch points. |
-| `length_min` | Minimum centerline section length used for local cross-section analysis. |
-| `length_max` | Maximum centerline section length used for local cross-section analysis. |
+| `length_min` | Minimum centerline section length, in metres. |
+| `length_max` | Maximum centerline section length, in metres. |
 | `width_margin` | Extra cross-section width retained after rotating a local section. |
 | `max_curve_ratio` | Maximum allowed arc-to-chord ratio before a section is shortened around a curve. |
-| `curve_resolution` | Sampling resolution for rail centerline construction and curvature checks. |
-| `graph_x_bin` | Bin size for building the X-Z terrain profile in each cross-section. |
+| `curve_resolution` | Centerline and curvature sampling interval, in metres. |
+| `graph_x_bin` | X-Z profile bin width, in metres. |
 | `graph_uphill_slope` | Minimum positive gradient treated as uphill terrain. |
-| `graph_min_uphill_points` | Minimum consecutive uphill bins required for slope detection. |
-| `graph_min_embankment_points` | Minimum bins required before accepting an embankment interval. |
+| `graph_embankment_min_stop_m` | Flat or uphill run that ends embankment detection, in metres. |
+| `graph_min_embankment_m` | Minimum embankment length before its stop condition is considered, in metres. |
 | `graph_noise_points` | Number of noisy bins tolerated while splitting profile sections. |
 | `graph_smooth_window` | Window size used to smooth the X-Z profile before gradient checks. |
-| `graph_max_gap_bins` | Maximum gap allowed between related profile regions. |
-| `graph_ditch_min_downhill_points` | Minimum consecutive downhill bins for ditch detection. |
-| `graph_ditch_min_uphill_points` | Minimum consecutive uphill bins for ditch detection. |
-| `graph_ditch_immediate_points` | Number of bins after embankment where an immediate ditch may begin. |
-| `graph_ditch_max_flat_points` | Maximum flat/noisy bins allowed between ditch sides. |
-| `smoothing` | Present in the default config. Boundary smoothing is enabled by default in `GroundSegmenter`; use `smooth` if this needs to be controlled from config. |
-| `smooth_level` | Boundary smoothing level in meters along the centerline. |
+| `graph_max_gap_bins` | Retained legacy setting; rail-based graph splitting does not use it. |
+| `graph_ditch_min_downhill_m` | Minimum downhill run for a ditch, in metres. |
+| `graph_ditch_min_uphill_m` | Minimum uphill run for a ditch, in metres. |
+| `graph_ditch_immediate_points_m` | Maximum distance from embankment to an immediate ditch uphill, in metres. |
+| `graph_ditch_max_flat_m` | Maximum flat bottom width between ditch sides, in metres. |
+| `graph_ditch_max_uphill_m` | Maximum retained uphill wall length for a ditch, in metres. |
+| `graph_ditch_search_min_m` | Ditch search start, measured outward from the rail, in metres. |
+| `graph_ditch_search_max_m` | Ditch search end, measured outward from the rail, in metres. |
+| `smooth` | Enables boundary smoothing. |
+| `smooth_level` | Gaussian smoothing distance along the centerline, in metres. |
