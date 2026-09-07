@@ -1,33 +1,29 @@
-try:
-    from .utils.plot_cloud import plot_cloud
-    from .utils.pcd_tools import voxel_subsample_vectorized
-except ImportError:
+import json
+import pathlib as pth
+from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import cast
 
+import laspy
+import numpy as np
+import psycopg2
+from scipy import ndimage as ndi
+from scipy.spatial import cKDTree  # type: ignore[attr-defined]
+from shapely import wkt as shapely_wkt
+from shapely.geometry import LineString, MultiLineString
+from tqdm import tqdm
+
+try:
+    from .utils.pcd_tools import voxel_subsample_vectorized
+    from .utils.plot_cloud import plot_cloud
+except ImportError:
     try:
-        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud # type: ignore
-        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized # type: ignore
+        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud  # type: ignore  # noqa: I001
+        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized  # type: ignore
     except ImportError:
-        from utils.plot_cloud import plot_cloud
+        from utils.plot_cloud import plot_cloud  # noqa: I001
         from utils.pcd_tools import voxel_subsample_vectorized
 
-    
-
-import json
-import laspy
-import psycopg2
-
-import numpy as np
-import pathlib as pth
-
-from tqdm import tqdm
-from typing import Union
-from typing import Optional
-from scipy import ndimage as ndi
-from scipy.spatial import cKDTree
-from shapely import wkt as shapely_wkt
-from dataclasses import dataclass, field
-from shapely.geometry import LineString, MultiLineString
-from typing import Optional
 
 @dataclass
 class PCD:
@@ -60,14 +56,14 @@ class SegmentEmbankment:
 
     def __init__(self,
                 cfg: dict,
-                db_param_path: Union[str, pth.Path], 
+                db_param_path: str | pth.Path, 
                 verbose: bool = False):
     
         self.cfg = cfg
         self.__db_param = self._load_db_params(db_param_path)
         self.verbose = verbose
 
-    def _load_db_params(self, path: Union[str, pth.Path]):
+    def _load_db_params(self, path: str | pth.Path):
         path = pth.Path(path)
         
         params = {}
@@ -89,7 +85,7 @@ class SegmentEmbankment:
         }
         return {key: self.cfg.get(key, defaults[key]) for key in keys}
 
-    def load_data(self, las_path: Union[str, pth.Path]) -> PCD:
+    def load_data(self, las_path: str | pth.Path) -> PCD:
         las_path = pth.Path(las_path)
         las = laspy.read(las_path)
 
@@ -108,7 +104,7 @@ class SegmentEmbankment:
     
     
     @classmethod
-    def from_config(cls, cfg_path: Union[str, pth.Path], db_param_path: Union[str, pth.Path], verbose: bool = False):
+    def from_config(cls, cfg_path: str | pth.Path, db_param_path: str | pth.Path, verbose: bool = False):
         cfg_path = pth.Path(cfg_path)
         with open(cfg_path, 'r') as f:
             cfg = json.load(f)
@@ -220,7 +216,7 @@ class SegmentEmbankment:
         refined_gm = ndi.binary_erosion(refined_gm, structure=erosion_struct)
         refined_gm = ndi.binary_dilation(refined_gm, structure=erosion_struct)  # przywróć rozmiar
 
-        label_im, nb_labels = ndi.label(refined_gm)
+        label_im, nb_labels = ndi.label(refined_gm)  # type: ignore[misc]
         sizes = ndi.sum(refined_gm, label_im, range(nb_labels + 1))
         mask_size = sizes < self.cfg["min_cluster_size"]
         remove_pixel = mask_size[label_im]
@@ -322,7 +318,11 @@ class SegmentEmbankment:
         invalid_mask = np.isnan(z_grid)
         if invalid_mask.all(): return new_final
             
-        _, indices = ndi.distance_transform_edt(invalid_mask, return_distances=True, return_indices=True)
+        _, indices = ndi.distance_transform_edt(  # type: ignore[misc]
+            invalid_mask,
+            return_distances=True,
+            return_indices=True,
+        )
         z_filled = z_grid[tuple(indices)]
         z_smoothed = ndi.gaussian_filter(z_filled, sigma=3.0)
 
@@ -332,7 +332,11 @@ class SegmentEmbankment:
         gm_tracks = np.zeros((ny, nx), dtype=bool)
         gm_tracks[iy[mask], ix[mask]] = True
 
-        dist_from_track, nearest_track_idx = ndi.distance_transform_edt(~gm_tracks, return_distances=True, return_indices=True)
+        dist_from_track, nearest_track_idx = ndi.distance_transform_edt(  # type: ignore[misc]
+            ~gm_tracks,
+            return_distances=True,
+            return_indices=True,
+        )
         dist_from_track *= self.cfg["grid_cell_size"]
 
         z_tracks_only = np.full((ny, nx), np.nan, dtype=np.float32)
@@ -404,11 +408,14 @@ class SegmentEmbankment:
     
     def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
                         chunk_size: int = 500_000,
-                        class_weights: dict = {1: 3.}) -> PCD:
+                        class_weights: dict | None = None) -> PCD:
         """
         class_weights: e.g. {2: 3.0} to triple the vote weight for embankment.
         Defaults to uniform if None.
         """
+        if class_weights is None:
+            class_weights = {1: 3.0}
+
         processed_mask   = data.processed
         unprocessed_mask = ~processed_mask
 
@@ -434,10 +441,15 @@ class SegmentEmbankment:
         query_pts  = data.points[unprocessed_mask]
         out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
 
-        pbar = range(0, query_pts.shape[0], chunk_size)
-        if self.verbose:
-            pbar = tqdm(pbar, total=query_pts.shape[0] // chunk_size + 1,
-                        desc="Embankment upsampling", unit="chunk", leave=False, position=1)
+        pbar = tqdm(
+            range(0, query_pts.shape[0], chunk_size),
+            total=query_pts.shape[0] // chunk_size + 1,
+            desc="Embankment upsampling",
+            unit="chunk",
+            leave=False,
+            position=1,
+            disable=not self.verbose,
+        )
 
         for start in pbar:
             end   = min(start + chunk_size, query_pts.shape[0])
@@ -452,17 +464,20 @@ class SegmentEmbankment:
             agg           *= bias                                                 # boost minority classes
             out_labels[start:end] = agg.argmax(axis=1).astype(np.uint8)
         
-        try:
+        with suppress(Exception):
             pbar.close()
-        except Exception:
-            pass
 
         data.labels[unprocessed_mask] = out_labels
         return data
 
 
     
-    def segment(self, data: Optional[PCD] = None, points: Optional[np.ndarray] = None, labels: Optional[np.ndarray] = None) -> np.ndarray:
+    def segment(
+        self,
+        data: PCD | None = None,
+        points: np.ndarray | None = None,
+        labels: np.ndarray | None = None,
+    ) -> np.ndarray:
         """
         Accepts a full PCD (all classes). Filters to ground + rail internally.
         Returns labels for the full PCD: original labels preserved for all
@@ -470,7 +485,10 @@ class SegmentEmbankment:
         """
 
         if data is None:
-            data = PCD(points=points, labels=labels)
+            data = PCD(
+                points=cast(np.ndarray, points),
+                labels=cast(np.ndarray, labels),
+            )
 
         full_labels = np.asarray(data.labels, dtype=np.uint8).copy()
 
@@ -557,7 +575,7 @@ def main():
 
     
 
-    original_las = laspy.read(laz_path)          # ← raz na początku
+    original_las = laspy.read(laz_path)  # noqa: F841
     data = segmenter.load_data(laz_path)
     xyz_orig = data.points.copy()
 
