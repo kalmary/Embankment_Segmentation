@@ -253,7 +253,7 @@ class SegmentEmbankment:
     
         xy_starts = [(x0, y0) for x0 in x_starts for y0 in y_starts]
         if self.verbose:
-            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False, position=1)
+            pbar = tqdm(xy_starts, total=len(xy_starts), desc="Tiling", unit="cell", leave=False, position=2)
         else:
             pbar = xy_starts
         
@@ -375,7 +375,7 @@ class SegmentEmbankment:
         return new_final
 
     def _base_segm(self, data: PCD) -> PCD:
-        with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=2, disable=not self.verbose) as pbar:
+        with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=3, disable=not self.verbose) as pbar:
             track_labels = data.labels  
 
             embankment_labels = self._grow_embankment_mask(data.points, track_labels)
@@ -447,7 +447,7 @@ class SegmentEmbankment:
             desc="Embankment upsampling",
             unit="chunk",
             leave=False,
-            position=1,
+            position=2,
             disable=not self.verbose,
         )
 

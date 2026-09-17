@@ -1073,7 +1073,7 @@ class GroundSegmenter:
         s = 0.0
         total = center_s[-1]
 
-        with tqdm(desc="Tiling", unit="tile", leave=False, position=1, disable=not self.verbose) as pbar:
+        with tqdm(desc="Tiling", unit="tile", leave=False, position=2, disable=not self.verbose) as pbar:
             while s < total:
                 s1 = self._best_cut_end(
                     s=s,
@@ -1637,7 +1637,7 @@ class GroundSegmenter:
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
-        with tqdm(desc="Filtering PCD", unit="step", total=3, leave=False, position=1, disable=not self.verbose) as pbar:
+        with tqdm(desc="Filtering PCD", unit="step", total=3, leave=False, position=2, disable=not self.verbose) as pbar:
             ground_mask = (
                 (full_labels == self.ground_label)
                 | (full_labels == self.rail_label)
@@ -1678,7 +1678,7 @@ class GroundSegmenter:
             rail = ground_rail[rail_mask]
             pbar.update(1)
 
-        with tqdm(desc="Finding centerline", unit="tile", total=2, leave=False, position=1, disable=not self.verbose) as pbar:
+        with tqdm(desc="Finding centerline", unit="tile", total=2, leave=False, position=2, disable=not self.verbose) as pbar:
             centerline_xy = rail[:, :2]
 
             if centerline_xy.shape[0] == 0:
