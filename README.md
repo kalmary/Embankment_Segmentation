@@ -19,7 +19,8 @@ The segmentation is configured with `src/ground_segm_config.json`.
 │       ├── pcd_tools.py              # Point cloud preprocessing helpers
 │       ├── plot_cloud.py             # Point cloud visualization
 │       └── plot_sections.py          # Section visualization helpers
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 └── README.md
 ```
 
@@ -29,10 +30,16 @@ The segmentation is configured with `src/ground_segm_config.json`.
 git clone https://github.com/kalmary/Embankment_Segmentation.git
 cd Embankment_Segmentation
 
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+uv sync
+uv sync --group test  # add plotting and test tools
+```
+
+The default `basic` group includes LAS/LAZ runtime support. The `test` group adds plotting and test dependencies.
+
+Run files through the locked environment. For example, after saving the usage example below as `segment.py`:
+
+```bash
+uv run --no-sync python segment.py
 ```
 
 ## Usage
