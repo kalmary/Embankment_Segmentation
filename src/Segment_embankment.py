@@ -8,7 +8,7 @@ import laspy
 import numpy as np
 import psycopg2
 from scipy import ndimage as ndi
-from scipy.spatial import cKDTree  # type: ignore[attr-defined]
+from scipy.spatial import KDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
@@ -153,7 +153,7 @@ class SegmentEmbankment:
         if rail_xy.shape[0] == 0:
             return np.zeros(xyz.shape[0], dtype=np.uint8)
 
-        tree = cKDTree(rail_xy)
+        tree = KDTree(rail_xy)
         dist, _ = tree.query(xyz[:, :2])
         labels = (dist <= rail_radius).astype(np.uint8)
 
@@ -437,7 +437,7 @@ class SegmentEmbankment:
             for cls, w in class_weights.items():
                 bias[cls] = w
 
-        tree = cKDTree(src_pts)
+        tree = KDTree(src_pts)
         query_pts  = data.points[unprocessed_mask]
         out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
 
