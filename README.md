@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains a ground-profile segmentation workflow for railway LiDAR point clouds. The documented workflow uses `src/SegmentGround.py` as the segmentation entry point.
+This repository contains a ground-profile segmentation workflow for railway LiDAR point clouds. The documented workflow uses `src/segment_ground.py` as the segmentation entry point.
 
 `GroundSegmenter` uses point coordinates, existing LAS classification labels, and rail geometry. It finds rail-adjacent points, builds a local rail centerline, cuts the point cloud into cross-sections, and classifies nearby terrain into ground, rail, embankment, and ditch labels.
 
@@ -13,7 +13,7 @@ The segmentation is configured with `src/ground_segm_config.json`.
 ```text
 .
 ├── src
-│   ├── SegmentGround.py              # Ground, embankment, and ditch segmentation
+│   ├── segment_ground.py              # Ground, embankment, and ditch segmentation
 │   ├── ground_segm_config.json       # Ground segmentation parameters
 │   └── utils
 │       ├── pcd_tools.py              # Point cloud preprocessing helpers
@@ -48,7 +48,7 @@ uv run --no-sync python segment.py
 import laspy
 import numpy as np
 
-from src.SegmentGround import GroundSegmenter
+from src.segment_ground import GroundSegmenter
 
 las = laspy.read("input.laz")
 points = np.column_stack((las.x, las.y, las.z))

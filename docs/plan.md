@@ -27,7 +27,7 @@
 ## Task 3: Stabilize imports and resources
 
 - [ ] Replace conditional generic `utils` imports with package-relative imports.
-- [ ] Keep `SegmentGround.py`, `Segment_embankment.py`, and `SegmentDitches.py` as compatibility modules while internals move.
+- [ ] Keep `segment_ground.py`, `segment_embankment.py`, and `segment_ditches.py` as entry-point modules while internals move.
 - [ ] Resolve config and database parameter files from explicit paths or stable project-relative defaults.
 - [ ] Move plotting imports behind plotting calls and test headless imports.
 - [ ] Verify direct and module execution after each change.
