@@ -26,7 +26,7 @@ except ImportError:
 
 
 @dataclass
-class PCD:
+class Pcd:
     points: np.ndarray = field(default_factory=lambda: np.array([]))
     labels: np.ndarray = field(default_factory=lambda: np.array([]))
     processed: np.ndarray = field(default_factory=lambda: np.zeros([], dtype=bool))
@@ -46,7 +46,7 @@ class PCD:
         self.processed[mask] = True
 
     def copy(self):
-        return PCD(
+        return Pcd(
             points=self.points.copy(),
             labels=self.labels.copy(),
             processed=self.processed.copy()
@@ -85,7 +85,7 @@ class SegmentEmbankment:
         }
         return {key: self.cfg.get(key, defaults[key]) for key in keys}
 
-    def load_data(self, las_path: str | pth.Path) -> PCD:
+    def load_data(self, las_path: str | pth.Path) -> Pcd:
         las_path = pth.Path(las_path)
         las = laspy.read(las_path)
 
@@ -98,7 +98,7 @@ class SegmentEmbankment:
         labels = np.asarray(las.classification, dtype=np.uint8)
         del las
 
-        data = PCD(xyz, labels)
+        data = Pcd(xyz, labels)
 
         return data
     
@@ -374,7 +374,7 @@ class SegmentEmbankment:
         
         return new_final
 
-    def _base_segm(self, data: PCD) -> PCD:
+    def _base_segm(self, data: Pcd) -> Pcd:
         with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=3, disable=not self.verbose) as pbar:
             track_labels = data.labels  
 
@@ -394,7 +394,7 @@ class SegmentEmbankment:
             pbar.update(1)
         return data
     
-    def _big_segm(self, data: PCD) -> PCD:
+    def _big_segm(self, data: Pcd) -> Pcd:
         data.processed = np.zeros(data.points.shape[0], dtype=bool)
 
         for mask in self._iter_tiles(data.points, tile_size=40, overlap=10, min_points=1024):
@@ -406,9 +406,9 @@ class SegmentEmbankment:
 
         return data
     
-    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
+    def _upsample_labels(self, data: Pcd, k: int = 10, sigma: float = 1.0,
                         chunk_size: int = 500_000,
-                        class_weights: dict | None = None) -> PCD:
+                        class_weights: dict | None = None) -> Pcd:
         """
         class_weights: e.g. {2: 3.0} to triple the vote weight for embankment.
         Defaults to uniform if None.
@@ -474,7 +474,7 @@ class SegmentEmbankment:
     
     def segment(
         self,
-        data: PCD | None = None,
+        data: Pcd | None = None,
         points: np.ndarray | None = None,
         labels: np.ndarray | None = None,
     ) -> np.ndarray:
@@ -485,7 +485,7 @@ class SegmentEmbankment:
         """
 
         if data is None:
-            data = PCD(
+            data = Pcd(
                 points=cast(np.ndarray, points),
                 labels=cast(np.ndarray, labels),
             )
@@ -504,7 +504,7 @@ class SegmentEmbankment:
         ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
         
 
-        filtered = PCD(
+        filtered = Pcd(
             points=data.points[ground_rail_mask].copy(),
             labels=np.zeros(ground_rail_mask.sum(), dtype=np.uint8),
         )
