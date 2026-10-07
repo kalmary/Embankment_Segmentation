@@ -18,8 +18,8 @@ try:
     from .utils.plot_cloud import plot_cloud
 except ImportError:
     try:
-        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud  # type: ignore  # noqa: I001
-        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized  # type: ignore
+        from embankment_segmentation.src.utils.plot_cloud import plot_cloud  # type: ignore  # noqa: I001
+        from embankment_segmentation.src.utils.pcd_tools import voxel_subsample_vectorized  # type: ignore
     except ImportError:
         from utils.plot_cloud import plot_cloud  # noqa: I001
         from utils.pcd_tools import voxel_subsample_vectorized
