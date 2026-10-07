@@ -1,10 +1,10 @@
+import argparse
 import json
 import pathlib as pth
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import cast
 
-import laspy
 import numpy as np
 import psycopg2
 from scipy import ndimage as ndi
@@ -12,17 +12,6 @@ from scipy.spatial import KDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
-
-try:
-    from .utils.pcd_tools import voxel_subsample_vectorized
-    from .utils.plot_cloud import plot_cloud
-except ImportError:
-    try:
-        from embankment_segmentation.src.utils.plot_cloud import plot_cloud  # type: ignore  # noqa: I001
-        from embankment_segmentation.src.utils.pcd_tools import voxel_subsample_vectorized  # type: ignore
-    except ImportError:
-        from utils.plot_cloud import plot_cloud  # noqa: I001
-        from utils.pcd_tools import voxel_subsample_vectorized
 
 
 @dataclass
@@ -86,6 +75,8 @@ class SegmentEmbankment:
         return {key: self.cfg.get(key, defaults[key]) for key in keys}
 
     def load_data(self, las_path: str | pth.Path) -> Pcd:
+        import laspy
+
         las_path = pth.Path(las_path)
         las = laspy.read(las_path)
 
@@ -484,6 +475,11 @@ class SegmentEmbankment:
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
 
+        if __package__:
+            from .utils.pcd_tools import voxel_subsample_vectorized
+        else:
+            from utils.pcd_tools import voxel_subsample_vectorized
+
         if data is None:
             data = Pcd(
                 points=cast(np.ndarray, points),
@@ -561,22 +557,23 @@ class SegmentEmbankment:
 
         return full_labels
     
-def main():
-    laz_path = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/Grajewo_michal_mod.laz")
-    db_params_path = "src/db_params.txt"
-    embankment_config_path = "src/embankment_config.json"
-    verbose = True
+def main(argv=None):
+    module_dir = pth.Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Segment embankment labels in a LAZ file.")
+    parser.add_argument("--input-path", type=pth.Path, required=True)
+    parser.add_argument("--config-path", type=pth.Path, default=module_dir / "embankment_config.json")
+    parser.add_argument("--db-params-path", type=pth.Path, default=module_dir / "db_params.txt")
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args(argv)
 
     segmenter = SegmentEmbankment.from_config(
-        cfg_path=embankment_config_path,
-        db_param_path=db_params_path,
-        verbose=verbose,
+        cfg_path=args.config_path,
+        db_param_path=args.db_params_path,
+        verbose=args.verbose,
     )
 
-    
-
-    original_las = laspy.read(laz_path)  # noqa: F841
-    data = segmenter.load_data(laz_path)
+    data = segmenter.load_data(args.input_path)
     xyz_orig = data.points.copy()
 
     labels = segmenter.segment(data)
@@ -591,7 +588,13 @@ def main():
         (labels == 10)
     )
 
-    plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+    if args.plot:
+        if __package__:
+            from .utils.plot_cloud import plot_cloud
+        else:
+            from utils.plot_cloud import plot_cloud
+
+        plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
 
 if __name__ == "__main__":

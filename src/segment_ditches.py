@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import pathlib as pth
 from typing import Union
@@ -945,25 +946,38 @@ class DitchSegmenter:
         return labels_out
 
 
-if __name__ == "__main__":
-    import laspy
-    from utils.plot_cloud import plot_cloud
+def main(argv=None):
+    module_dir = pth.Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Segment ditch labels in a LAZ file.")
+    parser.add_argument("--input-path", type=pth.Path, required=True)
+    parser.add_argument("--config-path", type=pth.Path, default=module_dir / "ditches_config.json")
+    parser.add_argument("--db-params-path", type=pth.Path, default=module_dir / "db_params.txt")
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args(argv)
 
-    las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_mod.laz"
-    )
+    import laspy
+
+    las_file = laspy.read(args.input_path)
 
     points = np.vstack((las_file.x, las_file.y, las_file.z)).T
     labels = np.asarray(las_file.classification)
 
-    cfg_path = pth.Path(__file__).parent / "ditches_config.json"
-    db_param_path = pth.Path(__file__).parent / "db_params.txt"
-
     cutter = DitchSegmenter.from_config(
-        cfg_path=cfg_path,
-        db_param_path=db_param_path,
-        verbose=False,
+        cfg_path=args.config_path,
+        db_param_path=args.db_params_path,
+        verbose=args.verbose,
     )
 
     labels_sectioned = cutter.segment(points, labels)
-    plot_cloud(points, labels_sectioned)
+    if args.plot:
+        if __package__:
+            from .utils.plot_cloud import plot_cloud
+        else:
+            from utils.plot_cloud import plot_cloud
+
+        plot_cloud(points, labels_sectioned)
+
+
+if __name__ == "__main__":
+    main()
