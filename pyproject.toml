@@ -16,7 +16,7 @@ basic = [
     "shapely>=2.1,<3",
     "tqdm>=4.67,<5",
 ]
-test = [
+dev = [
     { include-group = "basic" },
     "matplotlib>=3.10,<4",
     "pytest>=9,<10",

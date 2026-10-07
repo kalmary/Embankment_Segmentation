@@ -233,7 +233,7 @@ basic = [
     { name = "shapely" },
     { name = "tqdm" },
 ]
-test = [
+dev = [
     { name = "laspy" },
     { name = "laszip" },
     { name = "lazrs" },
@@ -262,7 +262,7 @@ basic = [
     { name = "shapely", specifier = ">=2.1,<3" },
     { name = "tqdm", specifier = ">=4.67,<5" },
 ]
-test = [
+dev = [
     { name = "laspy", specifier = ">=2.6,<3" },
     { name = "laszip", specifier = ">=0.2,<1" },
     { name = "lazrs", specifier = ">=0.8,<1" },

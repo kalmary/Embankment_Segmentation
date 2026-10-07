@@ -31,10 +31,10 @@ git clone https://github.com/kalmary/Embankment_Segmentation.git
 cd Embankment_Segmentation
 
 uv sync
-uv sync --group test  # add plotting and test tools
+uv sync --group dev  # add plotting and test tools
 ```
 
-The default `basic` group includes LAS/LAZ runtime support. The `test` group adds plotting and test dependencies.
+The default `basic` group includes LAS/LAZ runtime support. The `dev` group adds plotting and test dependencies.
 
 Run files through the locked environment. For example, after saving the usage example below as `segment.py`:
 

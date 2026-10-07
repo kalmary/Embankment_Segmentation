@@ -12,9 +12,9 @@
 
 - [x] Create `.python-version`, `pyproject.toml`, and `uv.lock` for Python 3.12.
 - [x] Replace the full environment freeze with direct dependencies discovered from imports.
-- [x] Define a headless `basic` group and a `test` group including `basic`, `pytest`, `matplotlib`, and `pyvista`.
+- [x] Define a headless `basic` group and a `dev` group including `basic`, `pytest`, `matplotlib`, and `pyvista`.
 - [x] Keep plotting dependencies out of the basic import path; retain Open3D where computational code requires it.
-- [x] Verify clean basic/test syncs and import the public segmenters.
+- [x] Verify clean basic/dev syncs and import the public segmenters.
 
 ## Task 2: Characterize public contracts
 
@@ -51,7 +51,7 @@
 
 - [ ] Run all deterministic unit and integration fixtures without database or display access.
 - [ ] Run a separate PostgreSQL integration smoke test with explicit credentials/configuration.
-- [ ] Run plotting smoke tests in the test environment.
+- [ ] Run plotting smoke tests in the dev environment.
 - [ ] Compare output labels on a representative railway tile before and after the rebuild.
 - [ ] Run the root pipeline's ground-stage and border-tree integration tests.
 
