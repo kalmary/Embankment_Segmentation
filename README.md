@@ -14,6 +14,8 @@ The segmentation is configured with `src/ground_segm_config.json`.
 .
 ├── src
 │   ├── segment_ground.py              # Ground, embankment, and ditch segmentation
+│   ├── segment_embankment.py          # Embankment segmentation entry point
+│   ├── segment_ditches.py             # Ditch segmentation entry point
 │   ├── ground_segm_config.json       # Ground segmentation parameters
 │   └── utils
 │       ├── pcd_tools.py              # Point cloud preprocessing helpers
@@ -31,15 +33,17 @@ git clone https://github.com/kalmary/Embankment_Segmentation.git
 cd Embankment_Segmentation
 
 uv sync
-uv sync --group dev  # add plotting and test tools
+uv sync --group dev  # add standalone LAS/LAZ, plotting, and test tools
 ```
 
-The default `basic` group includes LAS/LAZ runtime support. The `dev` group adds plotting and test dependencies.
+The default `basic` group provides the array-based segmentation runtime. The `dev` group adds standalone LAS/LAZ processing, plotting, and test dependencies.
 
-Run files through the locked environment. For example, after saving the usage example below as `segment.py`:
+The ground segmenter supports direct-script and module execution:
 
 ```bash
-uv run --no-sync python segment.py
+uv run --no-sync python src/segment_ground.py --help
+uv run --no-sync python -m src.segment_ground --help
+uv run --no-sync python src/segment_ground.py --input-path input.laz --no-plot
 ```
 
 ## Usage
