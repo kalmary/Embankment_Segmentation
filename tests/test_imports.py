@@ -31,14 +31,21 @@ import src.utils
 
 
 def test_ground_segmenter_imports_from_parent_project():
+    code = """
+import importlib.abc
+
+class BlockStandaloneImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.', 1)[0] in {'laspy', 'open3d'}:
+            raise ImportError(f'Standalone dependency imported: {fullname}')
+
+import sys
+sys.meta_path.insert(0, BlockStandaloneImports())
+from src.embankment_segmentation.src.segment_ground import GroundSegmenter
+assert GroundSegmenter.__module__ == 'src.embankment_segmentation.src.segment_ground'
+"""
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from src.embankment_segmentation.src.segment_ground import GroundSegmenter; "
-            "assert GroundSegmenter.__module__ == "
-            "'src.embankment_segmentation.src.segment_ground'",
-        ],
+        [sys.executable, "-c", code],
         cwd=PROJECT_ROOT.parents[1],
         capture_output=True,
         text=True,
