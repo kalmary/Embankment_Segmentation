@@ -33,7 +33,7 @@ point-aligned labels as before this import repair.
 
 ## Task 1: Inventory executable and import contracts
 
-- [ ] List every current `__main__` guard and classify it as an operational,
+- [x] List every current `__main__` guard and classify it as an operational,
   diagnostic, or developer command without removing it.
 - [ ] Add or complete paired direct/module `--help` tests for every command.
 - [ ] Assert that help does not load data, connect to PostgreSQL, create output,
