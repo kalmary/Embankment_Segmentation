@@ -426,6 +426,9 @@ class GroundSegmenter:
         return arc_len / chord_len
 
     def _build_centerline(self, xy: np.ndarray) -> np.ndarray:
+        if xy.shape[0] < 2:
+            return np.empty((0, 2), dtype=np.float64)
+
         keys = np.floor(xy / self.voxel).astype(np.int64)
 
         _, inverse = np.unique(keys, axis=0, return_inverse=True)
@@ -467,6 +470,9 @@ class GroundSegmenter:
 
         trace_u = np.asarray(trace_u, dtype=np.float64)
         trace_v = np.asarray(trace_v, dtype=np.float64)
+
+        if trace_u.size == 0:
+            return np.empty((0, 2), dtype=np.float64)
 
         order = np.argsort(trace_u)
         trace_u = trace_u[order]
@@ -1636,6 +1642,20 @@ class GroundSegmenter:
         return result
 
     def segment(self, points: np.ndarray, labels: np.ndarray) -> np.ndarray:
+        points = np.asarray(points)
+        labels = np.asarray(labels)
+
+        if points.ndim != 2:
+            raise ValueError("points must be a two-dimensional array.")
+        if points.shape[1] < 3:
+            raise ValueError("points must contain at least XYZ columns.")
+        if labels.ndim != 1:
+            raise ValueError("labels must be a one-dimensional array.")
+        if points.shape[0] != labels.shape[0]:
+            raise ValueError(
+                "points and labels must contain the same number of rows."
+            )
+
         full_labels = np.asarray(labels, dtype=np.uint8).copy()
 
         with tqdm(desc="Filtering PCD", unit="step", total=3, leave=False, position=2, disable=not self.verbose) as pbar:
@@ -1901,6 +1921,547 @@ class GroundSegmenter:
         # )
 
         return full_labels
+
+
+def test_ground_segmenter_loads_documented_configuration(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\nport=5432\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    assert segmenter.distance_limit == 25.0
+    assert segmenter.ground_label == 1
+    assert segmenter.rail_label == 0
+    assert segmenter.rail_radius == 1.0
+    assert segmenter.embankment_label == 10
+    assert segmenter.ditch_label == 11
+    assert segmenter.length_min == 2.0
+    assert segmenter.length_max == 10.0
+    assert segmenter.length == 10.0
+    assert segmenter.width_margin == 0.0
+    assert segmenter.max_curve_ratio == 1.1
+    assert segmenter.curve_resolution == 1.5
+    assert segmenter.voxel == 1.5
+    assert segmenter.graph_x_bin == 0.25
+    assert segmenter.graph_uphill_slope == 0.1
+    assert segmenter.graph_embankment_min_stop_points == 3
+    assert segmenter.graph_min_embankment_points == 7
+    assert segmenter.graph_noise_points == 2
+    assert segmenter.graph_smooth_window == 5
+    assert segmenter.graph_max_gap_bins == 1.0
+    assert segmenter.graph_ditch_min_downhill_points == 2
+    assert segmenter.graph_ditch_min_uphill_points == 2
+    assert segmenter.graph_ditch_immediate_points == 3
+    assert segmenter.graph_ditch_max_flat_points == 4
+    assert segmenter.graph_ditch_max_uphill_points == 8
+    assert segmenter.graph_ditch_search_min_m == 6.0
+    assert segmenter.graph_ditch_search_max_m == 16.0
+    assert segmenter.smooth is True
+    assert segmenter.smooth_level == 20.0
+    assert segmenter.verbose is False
+
+
+def test_ground_segmenter_preserves_legacy_distance_keys_and_defaults(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    config = json.loads(config_path.read_text())
+
+    replacements = {
+        "graph_embankment_min_stop_m": ("graph_min_uphill_points", 4),
+        "graph_min_embankment_m": ("graph_min_embankment_points", 6),
+        "graph_ditch_min_downhill_m": ("graph_ditch_min_downhill_points", 5),
+        "graph_ditch_min_uphill_m": ("graph_ditch_min_uphill_points", 3),
+        "graph_ditch_immediate_points_m": ("graph_ditch_immediate_points", 2),
+        "graph_ditch_max_flat_m": ("graph_ditch_max_flat_points", 7),
+        "graph_ditch_max_uphill_m": ("graph_ditch_max_uphill_points", 9),
+    }
+    for meter_key, (points_key, value) in replacements.items():
+        config.pop(meter_key)
+        config[points_key] = value
+
+    for key in (
+        "graph_ditch_search_min_m",
+        "graph_ditch_search_max_m",
+        "smooth",
+        "smooth_level",
+    ):
+        config.pop(key)
+    config["unused_setting"] = "ignored"
+
+    segmenter = GroundSegmenter(config, db_params_path, verbose=1)
+
+    assert segmenter.graph_embankment_min_stop_points == 4
+    assert segmenter.graph_min_embankment_points == 6
+    assert segmenter.graph_ditch_min_downhill_points == 5
+    assert segmenter.graph_ditch_min_uphill_points == 3
+    assert segmenter.graph_ditch_immediate_points == 2
+    assert segmenter.graph_ditch_max_flat_points == 7
+    assert segmenter.graph_ditch_max_uphill_points == 9
+    assert segmenter.graph_ditch_search_min_m == 0.0
+    assert segmenter.graph_ditch_search_max_m == segmenter.distance_limit
+    assert segmenter.smooth is True
+    assert segmenter.smooth_level == 10.0
+    assert segmenter.verbose is True
+    assert not hasattr(segmenter, "unused_setting")
+
+
+def test_ground_segmenter_requires_core_configuration_keys(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    documented_config = json.loads(config_path.read_text())
+    required_keys = (
+        "distance_limit",
+        "ground_label",
+        "rail_label",
+        "rail_radius",
+        "embankment_label",
+        "ditch_label",
+        "length_min",
+        "length_max",
+        "width_margin",
+        "max_curve_ratio",
+        "curve_resolution",
+        "graph_x_bin",
+        "graph_uphill_slope",
+        "graph_embankment_min_stop_m",
+        "graph_noise_points",
+        "graph_smooth_window",
+        "graph_max_gap_bins",
+    )
+
+    for key in required_keys:
+        config = documented_config.copy()
+        config.pop(key)
+
+        try:
+            GroundSegmenter(config, db_params_path)
+        except KeyError as error:
+            assert error.args == (key,)
+        else:
+            raise AssertionError(f"Missing configuration key was accepted: {key}")
+
+
+def test_ground_segmenter_validates_graph_distance_ranges(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    documented_config = json.loads(config_path.read_text())
+    invalid_values = (
+        ("graph_x_bin", 0.0, "graph_x_bin must be positive"),
+        (
+            "graph_embankment_min_stop_m",
+            -0.1,
+            "Graph distance thresholds must be non-negative",
+        ),
+        (
+            "graph_ditch_min_downhill_m",
+            -0.1,
+            "Graph distance thresholds must be non-negative",
+        ),
+        (
+            "graph_ditch_search_min_m",
+            -0.1,
+            "graph_ditch_search_min_m must be non-negative",
+        ),
+    )
+
+    for key, value, message in invalid_values:
+        config = documented_config.copy()
+        config[key] = value
+
+        try:
+            GroundSegmenter(config, db_params_path)
+        except ValueError as error:
+            assert message in str(error)
+        else:
+            raise AssertionError(f"Invalid configuration value was accepted: {key}")
+
+    config = documented_config.copy()
+    config["graph_ditch_search_min_m"] = 12.0
+    config["graph_ditch_search_max_m"] = 11.0
+    try:
+        GroundSegmenter(config, db_params_path)
+    except ValueError as error:
+        assert "graph_ditch_search_max_m must be >= graph_ditch_search_min_m" in str(
+            error
+        )
+    else:
+        raise AssertionError("An inverted ditch search range was accepted")
+
+
+def test_db_parameter_file_parsing_preserves_values_after_first_separator(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text(
+        "# database connection\n\nhost = localhost\npassword = left=right\n"
+    )
+
+    assert GroundSegmenter._load_db_params(db_params_path) == {
+        "host": "localhost",
+        "password": "left=right",
+    }
+
+
+def test_segment_returns_an_independent_empty_uint8_array(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    points = np.empty((0, 3), dtype=np.float64)
+    labels = np.empty(0, dtype=np.int16)
+
+    result = segmenter.segment(points, labels)
+
+    assert result.dtype == np.uint8
+    assert result.shape == labels.shape
+    assert result is not labels
+
+
+def test_segment_preserves_non_terrain_labels_and_inputs(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    points = np.array(
+        [
+            [3.0, 1.0, 2.0],
+            [1.0, 2.0, 3.0],
+            [2.0, 3.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    labels = np.array([7, 5, 9], dtype=np.uint8)
+    original_points = points.copy()
+    original_labels = labels.copy()
+
+    result = segmenter.segment(points, labels)
+
+    assert result.tolist() == [7, 5, 9]
+    assert result is not labels
+    assert np.array_equal(points, original_points)
+    assert np.array_equal(labels, original_labels)
+
+
+def test_segment_without_database_matched_rails_preserves_labels(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    segmenter._label_rail_points = lambda xyz, rail_radius: np.zeros(
+        xyz.shape[0], dtype=bool
+    )
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.5],
+            [2.0, 0.0, 1.0],
+            [3.0, 0.0, 1.5],
+        ],
+        dtype=np.float64,
+    )
+    labels = np.array([1, 0, 7, 1], dtype=np.uint8)
+    original_points = points.copy()
+    original_labels = labels.copy()
+
+    result = segmenter.segment(points, labels)
+
+    assert result.tolist() == [1, 0, 7, 1]
+    assert result is not labels
+    assert np.array_equal(points, original_points)
+    assert np.array_equal(labels, original_labels)
+
+
+def test_segment_rejects_non_matrix_points(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    try:
+        segmenter.segment(np.array([0.0, 1.0, 2.0]), np.array([1]))
+    except ValueError as error:
+        assert str(error) == "points must be a two-dimensional array."
+    else:
+        raise AssertionError("One-dimensional points were accepted")
+
+
+def test_segment_requires_xyz_columns(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    try:
+        segmenter.segment(np.zeros((2, 2)), np.array([1, 1]))
+    except ValueError as error:
+        assert str(error) == "points must contain at least XYZ columns."
+    else:
+        raise AssertionError("Points without an XYZ column were accepted")
+
+
+def test_segment_rejects_non_vector_labels(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    try:
+        segmenter.segment(np.zeros((2, 3)), np.array([[1], [1]]))
+    except ValueError as error:
+        assert str(error) == "labels must be a one-dimensional array."
+    else:
+        raise AssertionError("Two-dimensional labels were accepted")
+
+
+def test_segment_requires_one_label_per_point(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    try:
+        segmenter.segment(np.zeros((2, 3)), np.array([1]))
+    except ValueError as error:
+        assert str(error) == "points and labels must contain the same number of rows."
+    else:
+        raise AssertionError("Mismatched point and label counts were accepted")
+
+
+def test_database_track_query_uses_bbox_and_closes_connection(
+    tmp_path,
+    monkeypatch,
+):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\nport=5433\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    executed = {}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, query, parameters):
+            executed["query"] = query
+            executed["parameters"] = parameters
+
+        def fetchall(self):
+            return [
+                ("LINESTRING (0 0, 1 0)",),
+                ("MULTILINESTRING ((2 0, 3 0), (4 0, 5 0))",),
+            ]
+
+    class Connection:
+        def __init__(self):
+            self.closed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    def connect(**parameters):
+        executed["connection_parameters"] = parameters
+        return connection
+
+    monkeypatch.setattr(psycopg2, "connect", connect)
+
+    lines = segmenter._GroundSegmenter__load_tracks_from_db((1.0, 2.0, 3.0, 4.0))
+
+    assert executed["connection_parameters"] == {
+        "host": "database",
+        "port": "5433",
+    }
+    assert "ST_MakeEnvelope" in executed["query"]
+    assert executed["parameters"] == (1.0, 2.0, 3.0, 4.0)
+    assert [line.wkt for line in lines] == [
+        "LINESTRING (0 0, 1 0)",
+        "LINESTRING (2 0, 3 0)",
+        "LINESTRING (4 0, 5 0)",
+    ]
+    assert connection.closed is True
+
+
+def test_database_track_query_closes_connection_and_propagates_errors(
+    tmp_path,
+    monkeypatch,
+):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, query, parameters):
+            raise psycopg2.OperationalError("database unavailable")
+
+    class Connection:
+        def __init__(self):
+            self.closed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(psycopg2, "connect", lambda **parameters: connection)
+
+    try:
+        segmenter._GroundSegmenter__load_tracks_from_db((1.0, 2.0, 3.0, 4.0))
+    except psycopg2.OperationalError as error:
+        assert str(error) == "database unavailable"
+    else:
+        raise AssertionError("Database error was suppressed")
+
+    assert connection.closed is True
+
+
+def test_rail_point_labels_preserve_order_and_radius_boundary(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    requested = {}
+
+    def load_tracks(bbox):
+        requested["bbox"] = bbox
+        return [LineString([(0.0, 0.0), (10.0, 0.0)])]
+
+    segmenter._GroundSegmenter__load_tracks_from_db = load_tracks
+    points = np.array(
+        [
+            [5.0, 0.0, 3.0],
+            [5.0, 0.5, 4.0],
+            [5.0, 1.01, 5.0],
+            [11.0, 0.0, 6.0],
+        ]
+    )
+
+    result = segmenter._label_rail_points(points, rail_radius=1.0)
+
+    assert requested["bbox"] == (5.0, 0.0, 11.0, 1.01)
+    assert result.dtype == np.bool_
+    assert result.tolist() == [True, True, False, True]
+
+
+def test_rail_point_labels_skip_database_for_empty_input(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: (_ for _ in ()).throw(
+        AssertionError("Database should not be queried for an empty cloud")
+    )
+
+    result = segmenter._label_rail_points(
+        np.empty((0, 3), dtype=np.float64),
+        rail_radius=1.0,
+    )
+
+    assert result.dtype == np.bool_
+    assert result.shape == (0,)
+
+
+def test_straight_centerline_uses_maximum_section_length(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    centerline = np.array(
+        [
+            [0.0, 0.0],
+            [5.0, 0.0],
+            [10.0, 0.0],
+            [15.0, 0.0],
+        ]
+    )
+    center_s = segmenter._arc_length(centerline)
+
+    assert segmenter.get_curve_ratio(0.0, centerline, center_s) == 1.0
+    assert segmenter._best_cut_end(0.0, centerline, center_s) == 10.0
+
+
+def test_curved_centerline_shortens_section_to_minimum_length(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    centerline = np.array(
+        [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [1.0, 11.0],
+        ]
+    )
+    center_s = segmenter._arc_length(centerline)
+
+    assert segmenter.get_curve_ratio(0.0, centerline, center_s) > 1.1
+    assert segmenter._best_cut_end(0.0, centerline, center_s) == 2.0
+
+
+def test_segment_preserves_labels_when_database_matches_too_few_points(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: [
+        LineString([(0.0, 0.0), (10.0, 0.0)])
+    ]
+    points = np.array(
+        [
+            [5.0, 0.0, 2.0],
+            [5.0, 3.0, 4.0],
+        ]
+    )
+    labels = np.array([1, 7], dtype=np.uint8)
+    original_points = points.copy()
+    original_labels = labels.copy()
+
+    result = segmenter.segment(points, labels)
+
+    assert result.tolist() == [1, 7]
+    assert result is not labels
+    assert np.array_equal(points, original_points)
+    assert np.array_equal(labels, original_labels)
+
+
+def test_segment_preserves_labels_for_degenerate_database_matches(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: [
+        LineString([(0.0, 0.0), (10.0, 0.0)])
+    ]
+    points = np.repeat([[5.0, 0.0, 2.0]], repeats=4, axis=0)
+    labels = np.array([1, 1, 0, 0], dtype=np.uint8)
+    original_points = points.copy()
+    original_labels = labels.copy()
+
+    result = segmenter.segment(points, labels)
+
+    assert result.tolist() == [1, 1, 0, 0]
+    assert result is not labels
+    assert np.array_equal(points, original_points)
+    assert np.array_equal(labels, original_labels)
+
 
 def main(argv=None):
     module_dir = pth.Path(__file__).resolve().parent
