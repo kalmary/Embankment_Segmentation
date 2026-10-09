@@ -30,6 +30,36 @@ import src.utils
     assert result.returncode == 0, result.stderr
 
 
+def test_voxel_subsampling_import_does_not_require_open3d():
+    code = """
+import builtins
+import numpy as np
+
+original_import = builtins.__import__
+
+def import_without_open3d(name, *args, **kwargs):
+    if name.split('.', 1)[0] == 'open3d':
+        raise ImportError('open3d is not available')
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = import_without_open3d
+from src.utils.pcd_tools import voxel_subsample_vectorized
+
+points = np.array([[0.01, 0.01, 0.01], [0.09, 0.09, 0.09], [1.0, 1.0, 1.0]])
+mask = voxel_subsample_vectorized(points, voxel_size=0.1)
+assert mask.dtype == np.bool_
+assert mask.tolist() == [False, True, True]
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_ground_segmenter_imports_from_parent_project():
     code = """
 import importlib.abc
