@@ -2007,6 +2007,40 @@ def test_ground_segmenter_preserves_legacy_distance_keys_and_defaults(tmp_path):
     assert not hasattr(segmenter, "unused_setting")
 
 
+def test_ground_segmenter_converts_numeric_configuration_strings(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    config = json.loads(config_path.read_text())
+
+    for key, value in tuple(config.items()):
+        if not isinstance(value, bool):
+            config[key] = str(value)
+
+    segmenter = GroundSegmenter(config, db_params_path)
+
+    assert segmenter.distance_limit == 25.0
+    assert segmenter.ground_label == 1
+    assert segmenter.graph_noise_points == 2
+    assert segmenter.graph_ditch_search_max_m == 16.0
+    assert segmenter.smooth is True
+
+
+def test_ground_segmenter_rejects_non_numeric_configuration_values(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=localhost\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    config = json.loads(config_path.read_text())
+    config["distance_limit"] = "invalid"
+
+    try:
+        GroundSegmenter(config, db_params_path)
+    except ValueError as error:
+        assert "could not convert string to float" in str(error)
+    else:
+        raise AssertionError("A non-numeric distance_limit was accepted")
+
+
 def test_ground_segmenter_requires_core_configuration_keys(tmp_path):
     db_params_path = tmp_path / "db_params.txt"
     db_params_path.write_text("host=localhost\n")
@@ -2414,6 +2448,29 @@ def test_curved_centerline_shortens_section_to_minimum_length(tmp_path):
 
     assert segmenter.get_curve_ratio(0.0, centerline, center_s) > 1.1
     assert segmenter._best_cut_end(0.0, centerline, center_s) == 2.0
+
+
+def test_section_labels_preserve_order_and_apply_ditch_priority(tmp_path):
+    db_params_path = tmp_path / "db_params.txt"
+    db_params_path.write_text("host=database\n")
+    config_path = pth.Path(__file__).with_name("ground_segm_config.json")
+    segmenter = GroundSegmenter.from_config(config_path, db_params_path)
+    x = np.arange(-5.0, 6.0)
+    points = np.column_stack((x, np.zeros_like(x), np.zeros_like(x)))
+    labels = np.full(len(points), segmenter.ground_label, dtype=np.uint8)
+
+    result = segmenter._apply_section_labels(
+        labels_sectioned=labels,
+        points_chunk_rotated=points,
+        left_emb=np.array([[-3.0, 0.0], [-2.0, 0.0]]),
+        left_ditch=np.array([[-4.0, 0.0]]),
+        left_rest=np.array([[-5.0, 0.0]]),
+        right_emb=np.array([[2.0, 0.0], [3.0, 0.0]]),
+        right_ditch=np.array([[4.0, 0.0]]),
+        right_rest=np.array([[5.0, 0.0]]),
+    )
+
+    assert result.tolist() == [1, 11, 10, 10, 10, 10, 10, 10, 10, 11, 1]
 
 
 def test_segment_preserves_labels_when_database_matches_too_few_points(tmp_path):

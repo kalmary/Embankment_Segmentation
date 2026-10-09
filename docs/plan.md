@@ -18,9 +18,9 @@
 
 ## Task 2: Characterize public contracts
 
-- [ ] Test every accepted config key, type, default, range, and unknown/missing-key behavior.
-- [ ] Test input shape, dtype, copy-versus-mutation behavior, point ordering, preserved labels, and output labels.
-- [ ] Add fixtures for straight, curved, sparse, degenerate, missing-rail, and missing-ground profiles.
+- [x] Test every accepted config key, type, default, range, and unknown/missing-key behavior.
+- [x] Test input shape, dtype, copy-versus-mutation behavior, point ordering, preserved labels, and output labels.
+- [x] Add fixtures for straight, curved, sparse, degenerate, missing-rail, and missing-ground profiles.
 - [x] Pin current database-query behavior with a fake adapter and no live PostgreSQL dependency.
 - [x] Test standalone, parent-repository, direct-script, and module imports.
 
