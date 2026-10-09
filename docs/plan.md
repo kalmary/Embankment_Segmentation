@@ -1,59 +1,78 @@
-# Embankment Segmentation Rebuild Plan
+# Ground Segmentation Import Repair Plan
 
-**Goal:** Incrementally divide the existing ground-profile segmentation code into tested configuration, geometry, classification, persistence, and optional visualization responsibilities without changing numerical output.
+**Goal:** Keep the working ground-profile segmentation unchanged while making
+its public class and standalone tools import reliably from every supported
+execution context.
 
-**Root-facing contract:** `GroundSegmenter.from_config(...).segment(points, labels)` returns a point-aligned copy with only the documented terrain labels changed.
+**Root-facing contract:**
+`GroundSegmenter.from_config(...).segment(points, labels)` returns the same
+point-aligned labels as before this import repair.
 
-**Design:** `../../../docs/rebuild.md`
+**Parent plan:** `../../../docs/plan.md`
 
-**Branch requirement:** Perform all rebuild work on `development`. Verify the active branch first and request explicit approval before creating or switching it.
+## Frozen behavior
 
-## Task 1: Establish the uv project
+- Do not split or rewrite centerline construction, section construction,
+  smoothing, embankment detection, ditch detection, label application, or
+  database behavior.
+- Preserve configuration keys, defaults, labels, array ordering, and numerical
+  output.
+- Keep the completed immutable `GroundConfig`; no further configuration
+  redesign is planned.
+- Keep every current file with `__main__` executable independently from this
+  project, as both a module and a direct script where applicable.
 
-- [x] Create `.python-version`, `pyproject.toml`, and `uv.lock` for Python 3.12.
-- [x] Replace the full environment freeze with direct dependencies discovered from imports.
-- [x] Define a headless `basic` group and a `dev` group including `basic`, `pytest`, `matplotlib`, and `pyvista`.
-- [x] Keep plotting dependencies out of the basic import path; retain Open3D where computational code requires it.
-- [x] Verify clean basic/dev syncs and import the public segmenters.
+## Completed foundation
 
-## Task 2: Characterize public contracts
+- [x] Establish the Python 3.12 uv project and dependency groups.
+- [x] Characterize configuration, arrays, labels, database queries, sparse
+  inputs, and supported import contexts.
+- [x] Extract and test `GroundConfig` without changing `GroundSegmenter`'s
+  public attributes.
+- [x] Keep Open3D out of the voxel-sampling import path.
 
-- [x] Test every accepted config key, type, default, range, and unknown/missing-key behavior.
-- [x] Test input shape, dtype, copy-versus-mutation behavior, point ordering, preserved labels, and output labels.
-- [x] Add fixtures for straight, curved, sparse, degenerate, missing-rail, and missing-ground profiles.
-- [x] Pin current database-query behavior with a fake adapter and no live PostgreSQL dependency.
-- [x] Test standalone, parent-repository, direct-script, and module imports.
+## Task 1: Inventory executable and import contracts
 
-## Task 3: Stabilize imports and resources
+- [ ] List every current `__main__` guard and classify it as an operational,
+  diagnostic, or developer command without removing it.
+- [ ] Add or complete paired direct/module `--help` tests for every command.
+- [ ] Assert that help does not load data, connect to PostgreSQL, create output,
+  or initialize plotting.
+- [ ] Verify `GroundSegmenter` import from this project root and the parent BRIK
+  repository.
 
-- [ ] Replace conditional generic `utils` imports with package-relative imports.
-- [ ] Keep `segment_ground.py`, `segment_embankment.py`, and `segment_ditches.py` as entry-point modules while internals move.
-- [ ] Resolve config and database parameter files from explicit paths or stable project-relative defaults.
-- [ ] Move plotting imports behind plotting calls and test headless imports.
-- [ ] Verify direct and module execution after each change.
+## Task 2: Repair imports and resource ownership
 
-## Task 4: Split GroundSegmenter by responsibility
+- [ ] Replace generic and wildcard utility imports with explicit imports from
+  the defining module.
+- [ ] Use package-relative imports in reusable modules without broad
+  `ImportError` fallbacks.
+- [ ] Keep direct-script compatibility in thin entry-point handling rather than
+  in reusable algorithm modules.
+- [ ] Resolve config and database-parameter defaults relative to this project or
+  explicit user paths, never the caller's incidental working directory.
+- [ ] Load Laspy, Open3D, PyVista, and plotting helpers only inside workflows
+  that actually use them.
 
-- [x] Extract configuration parsing/validation first.
-- [ ] Extract centerline/section construction, profile smoothing, embankment detection, ditch detection, and label application one at a time.
-- [ ] Retain existing methods or forwarding calls when external callers may use them.
-- [ ] Compare arrays against characterization fixtures after every extraction.
+## Task 3: Preserve standalone tools
 
-## Task 5: Consolidate only proven duplication
+- [ ] Give operational, diagnostic, and developer scripts `main(argv=None)` and a
+  non-destructive `--help` path.
+- [ ] Replace developer-specific absolute-path examples with explicit CLI input.
+- [ ] Verify `segment_ground.py`, `segment_embankment.py`, and
+  `segment_ditches.py` in every declared direct/module form.
 
-- [ ] Compare legacy embankment/ditch classes with the active `GroundSegmenter` path.
-- [ ] Share helpers only where behavior and units are identical under tests.
-- [ ] Leave legacy behavior in place when equivalence is not demonstrated.
-- [ ] Do not rename public files or config keys merely for style.
+## Task 4: Verify
 
-## Task 6: Verify
+- [ ] Run import-boundary and invocation tests.
+- [ ] Run the complete deterministic suite and compare `GroundSegmenter` arrays
+  with the existing characterization fixtures.
+- [ ] Verify the root ground stage without visualization dependencies.
+- [ ] Run PostgreSQL and plotting smoke tests separately under `dev` when their
+  external requirements are available.
 
-- [ ] Run all deterministic unit and integration fixtures without database or display access.
-- [ ] Run a separate PostgreSQL integration smoke test with explicit credentials/configuration.
-- [ ] Run plotting smoke tests in the dev environment.
-- [ ] Compare output labels on a representative railway tile before and after the rebuild.
-- [ ] Run the root pipeline's ground-stage and border-tree integration tests.
+## Completion gate
 
-## Completion Gate
-
-Both uv groups reproduce; headless imports do not require visualization; the public segmenter and configs remain compatible; fixture and representative-tile labels match; database and visualization integrations are isolated.
+The public segmenter imports without visualization packages; standalone tools
+work from their owning project; all algorithm fixtures remain unchanged; and
+no computational segmentation method was refactored.
