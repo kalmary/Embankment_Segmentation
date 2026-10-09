@@ -15,6 +15,11 @@ from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
 
+if __package__:
+    from .ground_config import GroundConfig
+else:
+    from ground_config import GroundConfig
+
 # from utils.plot_sections import *
 
 
@@ -28,135 +33,45 @@ class GroundSegmenter:
         db_param_path: Union[str, pth.Path],
         verbose: bool = False,
     ):
-        self.distance_limit = float(cfg["distance_limit"])
-        self.ground_label = int(cfg["ground_label"])
-        self.rail_label = int(cfg["rail_label"])
-        self.rail_radius = float(cfg["rail_radius"])
-        self.embankment_label = int(cfg["embankment_label"])
-        self.ditch_label = int(cfg["ditch_label"])
+        self._config = GroundConfig.from_mapping(cfg)
 
-        self.length_min = float(cfg["length_min"])
-        self.length_max = float(cfg["length_max"])
+        self.distance_limit = self._config.distance_limit
+        self.ground_label = self._config.ground_label
+        self.rail_label = self._config.rail_label
+        self.rail_radius = self._config.rail_radius
+        self.embankment_label = self._config.embankment_label
+        self.ditch_label = self._config.ditch_label
+        self.length_min = self._config.length_min
+        self.length_max = self._config.length_max
         self.length = self.length_max
-
-        self.width_margin = float(cfg["width_margin"])
-
-        self.max_curve_ratio = float(cfg["max_curve_ratio"])
-        self.curve_resolution = float(cfg["curve_resolution"])
-
-        # Centerline voxelization follows curvature-check resolution.
+        self.width_margin = self._config.width_margin
+        self.max_curve_ratio = self._config.max_curve_ratio
+        self.curve_resolution = self._config.curve_resolution
         self.voxel = self.curve_resolution
-
-        self.graph_x_bin = float(cfg["graph_x_bin"])
-        self.graph_uphill_slope = float(cfg["graph_uphill_slope"])
-
-        # Convert configured distances to graph samples.
-        if "graph_embankment_min_stop_m" in cfg:
-            graph_embankment_min_stop_m = float(cfg["graph_embankment_min_stop_m"])
-        elif "graph_min_uphill_m" in cfg:
-            graph_embankment_min_stop_m = float(cfg["graph_min_uphill_m"])
-        else:
-            graph_embankment_min_stop_m = self._read_graph_distance_m(
-                cfg,
-                meter_key="graph_embankment_min_stop_m",
-                legacy_points_key="graph_min_uphill_points",
-            )
-
-        self.graph_embankment_min_stop_points = self._graph_meters_to_points(
-            graph_embankment_min_stop_m,
-            minimum_points=1,
+        self.graph_x_bin = self._config.graph_x_bin
+        self.graph_uphill_slope = self._config.graph_uphill_slope
+        self.graph_embankment_min_stop_points = (
+            self._config.graph_embankment_min_stop_points
         )
-
-        graph_min_embankment_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_min_embankment_m",
-            legacy_points_key="graph_min_embankment_points",
-            default_m=graph_embankment_min_stop_m,
+        self.graph_min_embankment_points = self._config.graph_min_embankment_points
+        self.graph_noise_points = self._config.graph_noise_points
+        self.graph_smooth_window = self._config.graph_smooth_window
+        self.graph_max_gap_bins = self._config.graph_max_gap_bins
+        self.graph_ditch_min_downhill_points = (
+            self._config.graph_ditch_min_downhill_points
         )
-        self.graph_min_embankment_points = self._graph_meters_to_points(
-            graph_min_embankment_m,
-            minimum_points=1,
+        self.graph_ditch_min_uphill_points = (
+            self._config.graph_ditch_min_uphill_points
         )
-
-        self.graph_noise_points = int(cfg["graph_noise_points"])
-        self.graph_smooth_window = int(cfg["graph_smooth_window"])
-        self.graph_max_gap_bins = float(cfg["graph_max_gap_bins"])
-
-        # Ditch thresholds are separate from embankment thresholds.
-        graph_ditch_min_downhill_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_ditch_min_downhill_m",
-            legacy_points_key="graph_ditch_min_downhill_points",
-            default_m=graph_embankment_min_stop_m,
+        self.graph_ditch_immediate_points = self._config.graph_ditch_immediate_points
+        self.graph_ditch_max_flat_points = self._config.graph_ditch_max_flat_points
+        self.graph_ditch_max_uphill_points = (
+            self._config.graph_ditch_max_uphill_points
         )
-        self.graph_ditch_min_downhill_points = self._graph_meters_to_points(
-            graph_ditch_min_downhill_m,
-            minimum_points=1,
-        )
-
-        graph_ditch_min_uphill_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_ditch_min_uphill_m",
-            legacy_points_key="graph_ditch_min_uphill_points",
-            default_m=graph_embankment_min_stop_m,
-        )
-        self.graph_ditch_min_uphill_points = self._graph_meters_to_points(
-            graph_ditch_min_uphill_m,
-            minimum_points=1,
-        )
-
-        graph_ditch_immediate_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_ditch_immediate_points_m",
-            legacy_points_key="graph_ditch_immediate_points",
-            default_m=(self.graph_noise_points + 1) * self.graph_x_bin,
-        )
-        self.graph_ditch_immediate_points = self._graph_meters_to_points(
-            graph_ditch_immediate_m,
-            minimum_points=0,
-        )
-
-        graph_ditch_max_flat_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_ditch_max_flat_m",
-            legacy_points_key="graph_ditch_max_flat_points",
-            default_m=(self.graph_noise_points + 2) * self.graph_x_bin,
-        )
-        self.graph_ditch_max_flat_points = self._graph_meters_to_points(
-            graph_ditch_max_flat_m,
-            minimum_points=0,
-        )
-
-        graph_ditch_max_uphill_m = self._read_graph_distance_m(
-            cfg,
-            meter_key="graph_ditch_max_uphill_m",
-            legacy_points_key="graph_ditch_max_uphill_points",
-            default_m=self.distance_limit,
-        )
-        self.graph_ditch_max_uphill_points = self._graph_meters_to_points(
-            graph_ditch_max_uphill_m,
-            minimum_points=self.graph_ditch_min_uphill_points,
-        )
-
-        # Ditch search range, measured outward from the rail.
-        self.graph_ditch_search_min_m = float(
-            cfg.get("graph_ditch_search_min_m", 0.0)
-        )
-        self.graph_ditch_search_max_m = float(
-            cfg.get("graph_ditch_search_max_m", self.distance_limit)
-        )
-
-        if self.graph_ditch_search_min_m < 0.0:
-            raise ValueError("graph_ditch_search_min_m must be non-negative.")
-
-        if self.graph_ditch_search_max_m < self.graph_ditch_search_min_m:
-            raise ValueError(
-                "graph_ditch_search_max_m must be >= graph_ditch_search_min_m."
-            )
-
-        # Gaussian smoothing distance along the centerline, in metres.
-        self.smooth = bool(cfg.get("smooth", True))
-        self.smooth_level = float(cfg.get("smooth_level", 10.0))
+        self.graph_ditch_search_min_m = self._config.graph_ditch_search_min_m
+        self.graph_ditch_search_max_m = self._config.graph_ditch_search_max_m
+        self.smooth = self._config.smooth
+        self.smooth_level = self._config.smooth_level
 
         self.verbose = bool(verbose)
         self.__db_param = self._load_db_params(db_param_path)

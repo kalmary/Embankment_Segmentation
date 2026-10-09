@@ -34,7 +34,7 @@
 
 ## Task 4: Split GroundSegmenter by responsibility
 
-- [ ] Extract configuration parsing/validation first.
+- [x] Extract configuration parsing/validation first.
 - [ ] Extract database/rail-geometry retrieval behind a small injected interface.
 - [ ] Extract centerline/section construction, profile smoothing, embankment detection, ditch detection, and label application one at a time.
 - [ ] Retain existing methods or forwarding calls when external callers may use them.

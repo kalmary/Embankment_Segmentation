@@ -28,4 +28,4 @@ package = false
 default-groups = ["basic"]
 
 [tool.pytest.ini_options]
-python_files = ["test_*.py", "Segment*.py", "segment_ground.py"]
+python_files = ["test_*.py", "Segment*.py", "ground_config.py", "segment_ground.py"]
