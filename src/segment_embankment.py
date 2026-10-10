@@ -374,7 +374,10 @@ class SegmentEmbankment:
             embankment_labels = self._grow_embankment_mask(data.points, track_labels)
 
             mask2fix = embankment_labels == 1
-            mask2d   = self._refine_mask_2d(data.points, mask2fix)
+            mask2d = np.asarray(
+                self._refine_mask_2d(data.points, mask2fix),
+                dtype=bool,
+            )
 
             embankment_labels = np.zeros_like(embankment_labels)
             embankment_labels[mask2d] = 1

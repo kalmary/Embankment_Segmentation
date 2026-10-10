@@ -9,7 +9,7 @@ from typing import Union
 
 import numpy as np
 
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # pyright: ignore[reportAttributeAccessIssue]
 from scipy.interpolate import UnivariateSpline
 
 
@@ -387,7 +387,7 @@ class DitchSegmenter:
         n_samples = max(len(trace_u), int(rough_len / self.voxel))
 
         u_new = np.linspace(trace_u[0], trace_u[-1], n_samples)
-        v_new = spline(u_new)
+        v_new = np.asarray(spline(u_new))
 
         return center + u_new[:, None] * forward + v_new[:, None] * right
 
@@ -962,7 +962,13 @@ def main(argv=None):
 
     las_file = laspy.read(args.input_path)
 
-    points = np.vstack((las_file.x, las_file.y, las_file.z)).T
+    points = np.vstack(
+        (
+            np.asarray(las_file.x),
+            np.asarray(las_file.y),
+            np.asarray(las_file.z),
+        )
+    ).T
     labels = np.asarray(las_file.classification)
 
     cutter = DitchSegmenter.from_config(

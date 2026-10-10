@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# pyright: reportImplicitRelativeImport=false
-
 import argparse
 import json
 import logging
@@ -2115,7 +2113,7 @@ def test_segment_without_database_matched_rails_preserves_labels(tmp_path):
     db_params_path.write_text("host=localhost\n")
     config_path = pth.Path(__file__).with_name("ground_segm_config.json")
     segmenter = GroundSegmenter.from_config(config_path, db_params_path)
-    segmenter._label_rail_points = lambda xyz, rail_radius: np.zeros(
+    segmenter._label_rail_points = lambda xyz, rail_radius=0.5: np.zeros(
         xyz.shape[0], dtype=bool
     )
     points = np.array(
@@ -2240,7 +2238,9 @@ def test_database_track_query_uses_bbox_and_closes_connection(
 
     monkeypatch.setattr(psycopg2, "connect", connect)
 
-    lines = segmenter._GroundSegmenter__load_tracks_from_db((1.0, 2.0, 3.0, 4.0))
+    lines = segmenter._GroundSegmenter__load_tracks_from_db(  # pyright: ignore[reportAttributeAccessIssue]
+        (1.0, 2.0, 3.0, 4.0)
+    )
 
     assert executed["connection_parameters"] == {
         "host": "database",
@@ -2289,7 +2289,9 @@ def test_database_track_query_closes_connection_and_propagates_errors(
     monkeypatch.setattr(psycopg2, "connect", lambda **parameters: connection)
 
     try:
-        segmenter._GroundSegmenter__load_tracks_from_db((1.0, 2.0, 3.0, 4.0))
+        segmenter._GroundSegmenter__load_tracks_from_db(  # pyright: ignore[reportAttributeAccessIssue]
+            (1.0, 2.0, 3.0, 4.0)
+        )
     except psycopg2.OperationalError as error:
         assert str(error) == "database unavailable"
     else:
@@ -2309,7 +2311,7 @@ def test_rail_point_labels_preserve_order_and_radius_boundary(tmp_path):
         requested["bbox"] = bbox
         return [LineString([(0.0, 0.0), (10.0, 0.0)])]
 
-    segmenter._GroundSegmenter__load_tracks_from_db = load_tracks
+    segmenter._GroundSegmenter__load_tracks_from_db = load_tracks  # pyright: ignore[reportAttributeAccessIssue]
     points = np.array(
         [
             [5.0, 0.0, 3.0],
@@ -2331,8 +2333,10 @@ def test_rail_point_labels_skip_database_for_empty_input(tmp_path):
     db_params_path.write_text("host=database\n")
     config_path = pth.Path(__file__).with_name("ground_segm_config.json")
     segmenter = GroundSegmenter.from_config(config_path, db_params_path)
-    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: (_ for _ in ()).throw(
-        AssertionError("Database should not be queried for an empty cloud")
+    segmenter._GroundSegmenter__load_tracks_from_db = (  # pyright: ignore[reportAttributeAccessIssue]
+        lambda bbox: (_ for _ in ()).throw(
+            AssertionError("Database should not be queried for an empty cloud")
+        )
     )
 
     result = segmenter._label_rail_points(
@@ -2410,9 +2414,9 @@ def test_segment_preserves_labels_when_database_matches_too_few_points(tmp_path)
     db_params_path.write_text("host=database\n")
     config_path = pth.Path(__file__).with_name("ground_segm_config.json")
     segmenter = GroundSegmenter.from_config(config_path, db_params_path)
-    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: [
-        LineString([(0.0, 0.0), (10.0, 0.0)])
-    ]
+    segmenter._GroundSegmenter__load_tracks_from_db = (  # pyright: ignore[reportAttributeAccessIssue]
+        lambda bbox: [LineString([(0.0, 0.0), (10.0, 0.0)])]
+    )
     points = np.array(
         [
             [5.0, 0.0, 2.0],
@@ -2436,9 +2440,9 @@ def test_segment_preserves_labels_for_degenerate_database_matches(tmp_path):
     db_params_path.write_text("host=database\n")
     config_path = pth.Path(__file__).with_name("ground_segm_config.json")
     segmenter = GroundSegmenter.from_config(config_path, db_params_path)
-    segmenter._GroundSegmenter__load_tracks_from_db = lambda bbox: [
-        LineString([(0.0, 0.0), (10.0, 0.0)])
-    ]
+    segmenter._GroundSegmenter__load_tracks_from_db = (  # pyright: ignore[reportAttributeAccessIssue]
+        lambda bbox: [LineString([(0.0, 0.0), (10.0, 0.0)])]
+    )
     points = np.repeat([[5.0, 0.0, 2.0]], repeats=4, axis=0)
     labels = np.array([1, 1, 0, 0], dtype=np.uint8)
     original_points = points.copy()

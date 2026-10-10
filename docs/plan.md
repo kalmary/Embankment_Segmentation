@@ -68,6 +68,8 @@ point-aligned labels as before this import repair.
 - [x] Run the complete deterministic suite and compare `GroundSegmenter` arrays
   with the existing characterization fixtures.
 - [x] Verify the root ground stage without visualization dependencies.
+- [x] Run Pyright for the public ground modules and resolve runtime type
+  ambiguities without changing numerical behavior.
 - [ ] Run PostgreSQL and plotting smoke tests separately under `dev` when their
   external requirements are available.
 
