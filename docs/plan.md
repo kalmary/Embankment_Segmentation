@@ -35,37 +35,37 @@ point-aligned labels as before this import repair.
 
 - [x] List every current `__main__` guard and classify it as an operational,
   diagnostic, or developer command without removing it.
-- [ ] Add or complete paired direct/module `--help` tests for every command.
-- [ ] Assert that help does not load data, connect to PostgreSQL, create output,
+- [x] Add or complete paired direct/module `--help` tests for every command.
+- [x] Assert that help does not load data, connect to PostgreSQL, create output,
   or initialize plotting.
-- [ ] Verify `GroundSegmenter` import from this project root and the parent BRIK
+- [x] Verify `GroundSegmenter` import from this project root and the parent BRIK
   repository.
 
 ## Task 2: Repair imports and resource ownership
 
-- [ ] Replace generic and wildcard utility imports with explicit imports from
+- [x] Replace generic and wildcard utility imports with explicit imports from
   the defining module.
-- [ ] Use package-relative imports in reusable modules without broad
+- [x] Use package-relative imports in reusable modules without broad
   `ImportError` fallbacks.
 - [ ] Keep direct-script compatibility in thin entry-point handling rather than
   in reusable algorithm modules.
-- [ ] Resolve config and database-parameter defaults relative to this project or
+- [x] Resolve config and database-parameter defaults relative to this project or
   explicit user paths, never the caller's incidental working directory.
-- [ ] Load Laspy, Open3D, PyVista, and plotting helpers only inside workflows
+- [x] Load Laspy, Open3D, PyVista, and plotting helpers only inside workflows
   that actually use them.
 
 ## Task 3: Preserve standalone tools
 
-- [ ] Give operational, diagnostic, and developer scripts `main(argv=None)` and a
+- [x] Give operational, diagnostic, and developer scripts `main(argv=None)` and a
   non-destructive `--help` path.
-- [ ] Replace developer-specific absolute-path examples with explicit CLI input.
-- [ ] Verify `segment_ground.py`, `segment_embankment.py`, and
+- [x] Replace developer-specific absolute-path examples with explicit CLI input.
+- [x] Verify `segment_ground.py`, `segment_embankment.py`, and
   `segment_ditches.py` in every declared direct/module form.
 
 ## Task 4: Verify
 
-- [ ] Run import-boundary and invocation tests.
-- [ ] Run the complete deterministic suite and compare `GroundSegmenter` arrays
+- [x] Run import-boundary and invocation tests.
+- [x] Run the complete deterministic suite and compare `GroundSegmenter` arrays
   with the existing characterization fixtures.
 - [ ] Verify the root ground stage without visualization dependencies.
 - [ ] Run PostgreSQL and plotting smoke tests separately under `dev` when their

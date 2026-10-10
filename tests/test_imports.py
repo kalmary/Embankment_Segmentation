@@ -82,3 +82,30 @@ assert GroundSegmenter.__module__ == 'src.embankment_segmentation.src.segment_gr
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_ground_segmenter_imports_from_own_project_without_standalone_dependencies():
+    code = """
+import importlib.abc
+import sys
+
+class BlockStandaloneImports(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.', 1)[0] in {
+            'laspy', 'matplotlib', 'open3d', 'pyvista'
+        }:
+            raise ImportError(f'Standalone dependency imported: {fullname}')
+
+sys.meta_path.insert(0, BlockStandaloneImports())
+from src.segment_ground import GroundSegmenter
+
+assert GroundSegmenter.__module__ == 'src.segment_ground'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
