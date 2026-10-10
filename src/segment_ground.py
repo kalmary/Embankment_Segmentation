@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+# pyright: reportImplicitRelativeImport=false
+
 import argparse
 import json
 import logging
 import pathlib as pth
-from typing import Union
+from typing import Any
 
 import numpy as np
 import psycopg2
 from scipy.interpolate import UnivariateSpline
 from scipy.ndimage import gaussian_filter1d
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # pyright: ignore[reportAttributeAccessIssue]
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
@@ -29,8 +31,8 @@ logger = logging.getLogger(__name__)
 class GroundSegmenter:
     def __init__(
         self,
-        cfg: dict,
-        db_param_path: Union[str, pth.Path],
+        cfg: dict[str, Any],
+        db_param_path: str | pth.Path,
         verbose: bool = False,
     ):
         self._config = GroundConfig.from_mapping(cfg)
@@ -81,8 +83,8 @@ class GroundSegmenter:
     @classmethod
     def from_config(
         cls,
-        cfg_path: Union[str, pth.Path],
-        db_param_path: Union[str, pth.Path],
+        cfg_path: str | pth.Path,
+        db_param_path: str | pth.Path,
         verbose: bool = False,
     ):
         cfg_path = pth.Path(cfg_path)
@@ -93,7 +95,7 @@ class GroundSegmenter:
 
     def _read_graph_distance_m(
         self,
-        cfg: dict,
+        cfg: dict[str, Any],
         meter_key: str,
         legacy_points_key: str,
         default_m: float | None = None,
@@ -129,7 +131,7 @@ class GroundSegmenter:
         return out
 
     @staticmethod
-    def _load_db_params(path: Union[str, pth.Path]):
+    def _load_db_params(path: str | pth.Path):
         path = pth.Path(path)
 
         params = {}
@@ -414,7 +416,7 @@ class GroundSegmenter:
         n_samples = max(len(trace_u), int(rough_len / self.voxel))
 
         u_new = np.linspace(trace_u[0], trace_u[-1], n_samples)
-        v_new = spline(u_new)
+        v_new = np.asarray(spline(u_new))
 
         return center + u_new[:, None] * forward + v_new[:, None] * right
 
@@ -1100,10 +1102,10 @@ class GroundSegmenter:
         """Return the area between the two embankment sides."""
         mask = np.zeros(points.shape[0], dtype=bool)
 
-        if not self._has_graph_section(left_emb):
+        if left_emb is None or len(left_emb) == 0:
             return mask
 
-        if not self._has_graph_section(right_emb):
+        if right_emb is None or len(right_emb) == 0:
             return mask
 
         emb_x = np.concatenate((left_emb[:, 0], right_emb[:, 0]))
@@ -1721,6 +1723,7 @@ class GroundSegmenter:
 
             if left_graph is not None:
                 left_graph_flipped = self._flip_graph_x(left_graph)
+                assert left_graph_flipped is not None
 
                 left_emb, left_ditch, left_rest = self.split_graph_by_gradient(
                     graph=left_graph_flipped,
@@ -1905,7 +1908,7 @@ def test_ground_segmenter_preserves_legacy_distance_keys_and_defaults(tmp_path):
         config.pop(key)
     config["unused_setting"] = "ignored"
 
-    segmenter = GroundSegmenter(config, db_params_path, verbose=1)
+    segmenter = GroundSegmenter(config, db_params_path, verbose=True)
 
     assert segmenter.graph_embankment_min_stop_points == 4
     assert segmenter.graph_min_embankment_points == 6
@@ -2449,7 +2452,13 @@ def main(argv=None):
 
     las_file = laspy.read(args.input_path)
 
-    points = np.vstack((las_file.x, las_file.y, las_file.z)).T
+    points = np.column_stack(
+        (
+            np.asarray(las_file.x),
+            np.asarray(las_file.y),
+            np.asarray(las_file.z),
+        )
+    )
     labels = np.asarray(las_file.classification)
 
 

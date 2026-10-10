@@ -1,7 +1,8 @@
 import json
 import pathlib as pth
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -37,7 +38,7 @@ class GroundConfig:
     smooth_level: float
 
     @classmethod
-    def from_mapping(cls, config: Mapping[str, object]):
+    def from_mapping(cls, config: Mapping[str, Any]):
         distance_limit = float(config["distance_limit"])
         graph_x_bin = float(config["graph_x_bin"])
 
@@ -180,7 +181,7 @@ class GroundConfig:
 
     @staticmethod
     def _read_graph_distance_m(
-        config: Mapping[str, object],
+        config: Mapping[str, Any],
         graph_x_bin: float,
         meter_key: str,
         legacy_points_key: str,
