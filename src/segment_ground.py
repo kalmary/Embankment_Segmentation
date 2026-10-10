@@ -6,6 +6,8 @@ import argparse
 import json
 import logging
 import pathlib as pth
+import runpy
+import sys
 from typing import Any
 
 import numpy as np
@@ -17,10 +19,22 @@ from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
 
-if __package__:
-    from .ground_config import GroundConfig
-else:
-    from ground_config import GroundConfig
+
+def _run_direct_entry_point() -> None:
+    project_root = str(pth.Path(__file__).resolve().parents[1])
+    sys.path.insert(0, project_root)
+    try:
+        runpy.run_module("src.segment_ground", run_name="__main__")
+    finally:
+        sys.path.remove(project_root)
+
+
+if __name__ == "__main__" and not __package__:
+    _run_direct_entry_point()
+    raise SystemExit
+
+
+from .ground_config import GroundConfig
 
 # from utils.plot_sections import *
 
@@ -2471,10 +2485,7 @@ def main(argv=None):
 
     labels_sectioned = cutter.segment(points, labels)
     if args.plot:
-        if __package__:
-            from .utils.plot_cloud import plot_cloud
-        else:
-            from utils.plot_cloud import plot_cloud
+        from .utils.plot_cloud import plot_cloud
 
         plot_cloud(points, labels_sectioned)
 

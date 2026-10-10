@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib as pth
+import runpy
+import sys
 from typing import Union
 
 import numpy as np
@@ -971,13 +973,22 @@ def main(argv=None):
 
     labels_sectioned = cutter.segment(points, labels)
     if args.plot:
-        if __package__:
-            from .utils.plot_cloud import plot_cloud
-        else:
-            from utils.plot_cloud import plot_cloud
+        from .utils.plot_cloud import plot_cloud
 
         plot_cloud(points, labels_sectioned)
 
 
+def _run_direct_entry_point() -> None:
+    project_root = str(pth.Path(__file__).resolve().parents[1])
+    sys.path.insert(0, project_root)
+    try:
+        runpy.run_module("src.segment_ditches", run_name="__main__")
+    finally:
+        sys.path.remove(project_root)
+
+
 if __name__ == "__main__":
-    main()
+    if __package__:
+        main()
+    else:
+        _run_direct_entry_point()

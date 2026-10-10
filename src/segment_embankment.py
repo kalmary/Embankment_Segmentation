@@ -1,6 +1,8 @@
 import argparse
 import json
 import pathlib as pth
+import runpy
+import sys
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import cast
@@ -475,10 +477,7 @@ class SegmentEmbankment:
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
 
-        if __package__:
-            from .utils.pcd_tools import voxel_subsample_vectorized
-        else:
-            from utils.pcd_tools import voxel_subsample_vectorized
+        from .utils.pcd_tools import voxel_subsample_vectorized
 
         if data is None:
             data = Pcd(
@@ -589,13 +588,22 @@ def main(argv=None):
     )
 
     if args.plot:
-        if __package__:
-            from .utils.plot_cloud import plot_cloud
-        else:
-            from utils.plot_cloud import plot_cloud
+        from .utils.plot_cloud import plot_cloud
 
         plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
 
 
+def _run_direct_entry_point() -> None:
+    project_root = str(pth.Path(__file__).resolve().parents[1])
+    sys.path.insert(0, project_root)
+    try:
+        runpy.run_module("src.segment_embankment", run_name="__main__")
+    finally:
+        sys.path.remove(project_root)
+
+
 if __name__ == "__main__":
-    main()
+    if __package__:
+        main()
+    else:
+        _run_direct_entry_point()

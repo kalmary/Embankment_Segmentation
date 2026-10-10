@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -100,6 +102,37 @@ sys.meta_path.insert(0, BlockStandaloneImports())
 from src.segment_ground import GroundSegmenter
 
 assert GroundSegmenter.__module__ == 'src.segment_ground'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["segment_ground", "segment_ditches", "segment_embankment"],
+)
+def test_reusable_module_imports_do_not_depend_on_execution_context(module):
+    code = f"""
+import importlib
+import inspect
+
+workflow = importlib.import_module('src.{module}')
+for name, value in vars(workflow).items():
+    if name == '_run_direct_entry_point':
+        continue
+    if (
+        (inspect.isfunction(value) or inspect.isclass(value))
+        and value.__module__ == workflow.__name__
+    ):
+        source = inspect.getsource(value)
+        assert 'if __package__' not in source, name
+        assert 'sys.path' not in source, name
 """
     result = subprocess.run(
         [sys.executable, "-c", code],

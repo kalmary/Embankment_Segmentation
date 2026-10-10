@@ -47,7 +47,7 @@ point-aligned labels as before this import repair.
   the defining module.
 - [x] Use package-relative imports in reusable modules without broad
   `ImportError` fallbacks.
-- [ ] Keep direct-script compatibility in thin entry-point handling rather than
+- [x] Keep direct-script compatibility in thin entry-point handling rather than
   in reusable algorithm modules.
 - [x] Resolve config and database-parameter defaults relative to this project or
   explicit user paths, never the caller's incidental working directory.
