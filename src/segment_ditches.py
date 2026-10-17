@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import json
 import pathlib as pth
+import runpy
+import sys
 from typing import Union
 
 import numpy as np
 
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # pyright: ignore[reportAttributeAccessIssue]
 from scipy.interpolate import UnivariateSpline
 
 
@@ -384,7 +387,7 @@ class DitchSegmenter:
         n_samples = max(len(trace_u), int(rough_len / self.voxel))
 
         u_new = np.linspace(trace_u[0], trace_u[-1], n_samples)
-        v_new = spline(u_new)
+        v_new = np.asarray(spline(u_new))
 
         return center + u_new[:, None] * forward + v_new[:, None] * right
 
@@ -945,25 +948,53 @@ class DitchSegmenter:
         return labels_out
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    module_dir = pth.Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Segment ditch labels in a LAZ file.")
+    parser.add_argument("--input-path", type=pth.Path, required=True)
+    parser.add_argument("--config-path", type=pth.Path, default=module_dir / "ditches_config.json")
+    parser.add_argument("--db-params-path", type=pth.Path, default=module_dir / "db_params.txt")
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args(argv)
+
     import laspy
-    from utils.plot_cloud import plot_cloud
 
-    las_file = laspy.read(
-        "/Users/michalsiniarski/Documents/DATA/BRIK/GRAJEWO-TEST/14-32_mini_mod.laz"
-    )
+    las_file = laspy.read(args.input_path)
 
-    points = np.vstack((las_file.x, las_file.y, las_file.z)).T
+    points = np.vstack(
+        (
+            np.asarray(las_file.x),
+            np.asarray(las_file.y),
+            np.asarray(las_file.z),
+        )
+    ).T
     labels = np.asarray(las_file.classification)
 
-    cfg_path = pth.Path(__file__).parent / "ditches_config.json"
-    db_param_path = pth.Path(__file__).parent / "db_params.txt"
-
     cutter = DitchSegmenter.from_config(
-        cfg_path=cfg_path,
-        db_param_path=db_param_path,
-        verbose=False,
+        cfg_path=args.config_path,
+        db_param_path=args.db_params_path,
+        verbose=args.verbose,
     )
 
     labels_sectioned = cutter.segment(points, labels)
-    plot_cloud(points, labels_sectioned)
+    if args.plot:
+        from .utils.plot_cloud import plot_cloud
+
+        plot_cloud(points, labels_sectioned)
+
+
+def _run_direct_entry_point() -> None:
+    project_root = str(pth.Path(__file__).resolve().parents[1])
+    sys.path.insert(0, project_root)
+    try:
+        runpy.run_module("src.segment_ditches", run_name="__main__")
+    finally:
+        sys.path.remove(project_root)
+
+
+if __name__ == "__main__":
+    if __package__:
+        main()
+    else:
+        _run_direct_entry_point()

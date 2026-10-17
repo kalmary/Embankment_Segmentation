@@ -1,32 +1,23 @@
+import argparse
 import json
 import pathlib as pth
+import runpy
+import sys
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import cast
 
-import laspy
 import numpy as np
 import psycopg2
 from scipy import ndimage as ndi
-from scipy.spatial import cKDTree  # type: ignore[attr-defined]
+from scipy.spatial import KDTree
 from shapely import wkt as shapely_wkt
 from shapely.geometry import LineString, MultiLineString
 from tqdm import tqdm
 
-try:
-    from .utils.pcd_tools import voxel_subsample_vectorized
-    from .utils.plot_cloud import plot_cloud
-except ImportError:
-    try:
-        from Embankment_Segmentation.src.utils.plot_cloud import plot_cloud  # type: ignore  # noqa: I001
-        from Embankment_Segmentation.src.utils.pcd_tools import voxel_subsample_vectorized  # type: ignore
-    except ImportError:
-        from utils.plot_cloud import plot_cloud  # noqa: I001
-        from utils.pcd_tools import voxel_subsample_vectorized
-
 
 @dataclass
-class PCD:
+class Pcd:
     points: np.ndarray = field(default_factory=lambda: np.array([]))
     labels: np.ndarray = field(default_factory=lambda: np.array([]))
     processed: np.ndarray = field(default_factory=lambda: np.zeros([], dtype=bool))
@@ -46,7 +37,7 @@ class PCD:
         self.processed[mask] = True
 
     def copy(self):
-        return PCD(
+        return Pcd(
             points=self.points.copy(),
             labels=self.labels.copy(),
             processed=self.processed.copy()
@@ -85,7 +76,9 @@ class SegmentEmbankment:
         }
         return {key: self.cfg.get(key, defaults[key]) for key in keys}
 
-    def load_data(self, las_path: str | pth.Path) -> PCD:
+    def load_data(self, las_path: str | pth.Path) -> Pcd:
+        import laspy
+
         las_path = pth.Path(las_path)
         las = laspy.read(las_path)
 
@@ -98,7 +91,7 @@ class SegmentEmbankment:
         labels = np.asarray(las.classification, dtype=np.uint8)
         del las
 
-        data = PCD(xyz, labels)
+        data = Pcd(xyz, labels)
 
         return data
     
@@ -153,7 +146,7 @@ class SegmentEmbankment:
         if rail_xy.shape[0] == 0:
             return np.zeros(xyz.shape[0], dtype=np.uint8)
 
-        tree = cKDTree(rail_xy)
+        tree = KDTree(rail_xy)
         dist, _ = tree.query(xyz[:, :2])
         labels = (dist <= rail_radius).astype(np.uint8)
 
@@ -374,14 +367,17 @@ class SegmentEmbankment:
         
         return new_final
 
-    def _base_segm(self, data: PCD) -> PCD:
+    def _base_segm(self, data: Pcd) -> Pcd:
         with tqdm(total=1, desc="Segmenting embankment", unit="tile", leave=False, position=3, disable=not self.verbose) as pbar:
             track_labels = data.labels  
 
             embankment_labels = self._grow_embankment_mask(data.points, track_labels)
 
             mask2fix = embankment_labels == 1
-            mask2d   = self._refine_mask_2d(data.points, mask2fix)
+            mask2d = np.asarray(
+                self._refine_mask_2d(data.points, mask2fix),
+                dtype=bool,
+            )
 
             embankment_labels = np.zeros_like(embankment_labels)
             embankment_labels[mask2d] = 1
@@ -394,7 +390,7 @@ class SegmentEmbankment:
             pbar.update(1)
         return data
     
-    def _big_segm(self, data: PCD) -> PCD:
+    def _big_segm(self, data: Pcd) -> Pcd:
         data.processed = np.zeros(data.points.shape[0], dtype=bool)
 
         for mask in self._iter_tiles(data.points, tile_size=40, overlap=10, min_points=1024):
@@ -406,9 +402,9 @@ class SegmentEmbankment:
 
         return data
     
-    def _upsample_labels(self, data: PCD, k: int = 10, sigma: float = 1.0,
+    def _upsample_labels(self, data: Pcd, k: int = 10, sigma: float = 1.0,
                         chunk_size: int = 500_000,
-                        class_weights: dict | None = None) -> PCD:
+                        class_weights: dict | None = None) -> Pcd:
         """
         class_weights: e.g. {2: 3.0} to triple the vote weight for embankment.
         Defaults to uniform if None.
@@ -437,7 +433,7 @@ class SegmentEmbankment:
             for cls, w in class_weights.items():
                 bias[cls] = w
 
-        tree = cKDTree(src_pts)
+        tree = KDTree(src_pts)
         query_pts  = data.points[unprocessed_mask]
         out_labels = np.zeros(query_pts.shape[0], dtype=np.uint8)
 
@@ -474,7 +470,7 @@ class SegmentEmbankment:
     
     def segment(
         self,
-        data: PCD | None = None,
+        data: Pcd | None = None,
         points: np.ndarray | None = None,
         labels: np.ndarray | None = None,
     ) -> np.ndarray:
@@ -484,8 +480,10 @@ class SegmentEmbankment:
         non-ground/rail points; ground points reclassified as embankment get label 10.
         """
 
+        from .utils.pcd_tools import voxel_subsample_vectorized
+
         if data is None:
-            data = PCD(
+            data = Pcd(
                 points=cast(np.ndarray, points),
                 labels=cast(np.ndarray, labels),
             )
@@ -504,7 +502,7 @@ class SegmentEmbankment:
         ground_rail_idx = np.where(ground_rail_mask)[0]  # indices into full array
         
 
-        filtered = PCD(
+        filtered = Pcd(
             points=data.points[ground_rail_mask].copy(),
             labels=np.zeros(ground_rail_mask.sum(), dtype=np.uint8),
         )
@@ -561,22 +559,23 @@ class SegmentEmbankment:
 
         return full_labels
     
-def main():
-    laz_path = pth.Path("/mnt/SSD_EXT4_1TB/DATA/GRAJEWO/Grajewo_michal_mod.laz")
-    db_params_path = "src/db_params.txt"
-    embankment_config_path = "src/embankment_config.json"
-    verbose = True
+def main(argv=None):
+    module_dir = pth.Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description="Segment embankment labels in a LAZ file.")
+    parser.add_argument("--input-path", type=pth.Path, required=True)
+    parser.add_argument("--config-path", type=pth.Path, default=module_dir / "embankment_config.json")
+    parser.add_argument("--db-params-path", type=pth.Path, default=module_dir / "db_params.txt")
+    parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args(argv)
 
     segmenter = SegmentEmbankment.from_config(
-        cfg_path=embankment_config_path,
-        db_param_path=db_params_path,
-        verbose=verbose,
+        cfg_path=args.config_path,
+        db_param_path=args.db_params_path,
+        verbose=args.verbose,
     )
 
-    
-
-    original_las = laspy.read(laz_path)  # noqa: F841
-    data = segmenter.load_data(laz_path)
+    data = segmenter.load_data(args.input_path)
     xyz_orig = data.points.copy()
 
     labels = segmenter.segment(data)
@@ -591,8 +590,23 @@ def main():
         (labels == 10)
     )
 
-    plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+    if args.plot:
+        from .utils.plot_cloud import plot_cloud
+
+        plot_cloud(xyz_vis[vis_mask], labels[vis_mask])
+
+
+def _run_direct_entry_point() -> None:
+    project_root = str(pth.Path(__file__).resolve().parents[1])
+    sys.path.insert(0, project_root)
+    try:
+        runpy.run_module("src.segment_embankment", run_name="__main__")
+    finally:
+        sys.path.remove(project_root)
 
 
 if __name__ == "__main__":
-    main()
+    if __package__:
+        main()
+    else:
+        _run_direct_entry_point()

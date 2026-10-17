@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains a ground-profile segmentation workflow for railway LiDAR point clouds. The documented workflow uses `src/SegmentGround.py` as the segmentation entry point.
+This repository contains a ground-profile segmentation workflow for railway LiDAR point clouds. The documented workflow uses `src/segment_ground.py` as the segmentation entry point.
 
 `GroundSegmenter` uses point coordinates, existing LAS classification labels, and rail geometry. It finds rail-adjacent points, builds a local rail centerline, cuts the point cloud into cross-sections, and classifies nearby terrain into ground, rail, embankment, and ditch labels.
 
@@ -13,13 +13,16 @@ The segmentation is configured with `src/ground_segm_config.json`.
 ```text
 .
 ├── src
-│   ├── SegmentGround.py              # Ground, embankment, and ditch segmentation
+│   ├── segment_ground.py              # Ground, embankment, and ditch segmentation
+│   ├── segment_embankment.py          # Embankment segmentation entry point
+│   ├── segment_ditches.py             # Ditch segmentation entry point
 │   ├── ground_segm_config.json       # Ground segmentation parameters
 │   └── utils
 │       ├── pcd_tools.py              # Point cloud preprocessing helpers
 │       ├── plot_cloud.py             # Point cloud visualization
 │       └── plot_sections.py          # Section visualization helpers
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 └── README.md
 ```
 
@@ -29,10 +32,18 @@ The segmentation is configured with `src/ground_segm_config.json`.
 git clone https://github.com/kalmary/Embankment_Segmentation.git
 cd Embankment_Segmentation
 
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+uv sync
+uv sync --group dev  # add standalone LAS/LAZ, plotting, and test tools
+```
+
+The default `basic` group provides the array-based segmentation runtime. The `dev` group adds standalone LAS/LAZ processing, plotting, and test dependencies.
+
+The ground segmenter supports direct-script and module execution:
+
+```bash
+uv run --no-sync python src/segment_ground.py --help
+uv run --no-sync python -m src.segment_ground --help
+uv run --no-sync python src/segment_ground.py --input-path input.laz --no-plot
 ```
 
 ## Usage
@@ -41,7 +52,7 @@ pip install -r requirements.txt
 import laspy
 import numpy as np
 
-from src.SegmentGround import GroundSegmenter
+from src.segment_ground import GroundSegmenter
 
 las = laspy.read("input.laz")
 points = np.column_stack((las.x, las.y, las.z))
